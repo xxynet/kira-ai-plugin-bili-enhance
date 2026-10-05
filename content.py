@@ -168,3 +168,37 @@ def write_data(result):
     if isinstance(reply, dict) and reply.get("rpid"):
         receipt["rpid"] = str(reply["rpid"])
     return receipt
+
+
+def comment_data(reply, *, root=None, parent=None, include_replies=True):
+    """Expose public comment fields and a bounded preview of attached replies."""
+    def identifier(value):
+        if type(value) not in (str, int) or str(value) in ("", "0"):
+            return None
+        return str(value)
+
+    comment_id = identifier(reply.get("rpid_str") or reply.get("rpid"))
+    root_id = identifier(reply.get("root_str") or reply.get("root")) or root or comment_id
+    parent_id = identifier(reply.get("parent_str") or reply.get("parent")) or parent
+    member = reply.get("member") or {}
+    content = reply.get("content") or {}
+    text = str(content.get("message") or "")
+    attached = reply.get("replies") or []
+    reply_count = reply.get("rcount", reply.get("count"))
+    if type(reply_count) is not int or reply_count < 0:
+        reply_count = None
+    images = [item["img_src"] for item in (content.get("pictures") or [])[:9]
+              if isinstance(item, dict) and isinstance(item.get("img_src"), str)]
+    result = {
+        "comment_id": comment_id, "root_comment_id": root_id, "parent_comment_id": parent_id,
+        "author": {"id": identifier(member.get("mid")), "name": str(member.get("uname") or "")[:128]},
+        "text": text[:2000], "text_truncated": len(text) > 2000,
+        "created_at": reply.get("ctime"), "likes": reply.get("like", 0),
+        "reply_count": reply_count, "images": images,
+        "replies": [],
+    }
+    if include_replies:
+        result["replies"] = [comment_data(item, root=root_id, parent=comment_id, include_replies=False)
+                             for item in attached[:3] if isinstance(item, dict)]
+    result["replies_complete"] = len(result["replies"]) >= reply_count if reply_count is not None else None
+    return result

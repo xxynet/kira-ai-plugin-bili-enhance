@@ -1,21 +1,21 @@
 {
   "plugin_id": "kira-ai-plugin-bili-enhance",
   "display_name": "BiliBili Enhance",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "core_version": ">=3.0.0-alpha.1",
   "icon": "icon.svg",
   "author": "xxynet",
-  "description": "Browse Bilibili feeds, search content, read video details and subtitles, like videos, comment and publish dynamics using existing adapter accounts.",
+  "description": "Browse Bilibili feeds and user uploads, search content, read video details and subtitles, like videos, read and post comments, and publish dynamics using existing adapter accounts.",
   "repo": "https://github.com/xxynet/kira-ai-plugin-bili-enhance",
   "tags": ["tools", "video", "social"],
   "locales": {
     "zh": {
       "display_name": "B站增强",
-      "description": "复用已有适配器账户，浏览B站内容、搜索、读取视频信息和字幕、点赞、评论及发布动态。"
+      "description": "复用已有适配器账户，浏览B站内容及用户投稿、搜索、读取视频信息和字幕、点赞、读取和发表评论及发布动态。"
     },
     "en": {
       "display_name": "BiliBili Enhance",
-      "description": "Browse Bilibili feeds, search content, read video details and subtitles, like videos, comment and publish dynamics using existing adapter accounts."
+      "description": "Browse Bilibili feeds and user uploads, search content, read video details and subtitles, like videos, read and post comments, and publish dynamics using existing adapter accounts."
     }
   }
 }

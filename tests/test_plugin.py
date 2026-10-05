@@ -41,7 +41,7 @@ def modules(monkeypatch):
     package.__path__ = [str(ROOT)]
     monkeypatch.setitem(sys.modules, package_name, package)
     loaded = {}
-    for name in ("main", "accounts", "content", "feed", "video", "i18n", "schemas"):
+    for name in ("main", "accounts", "content", "feed", "video", "user_videos", "i18n", "schemas"):
         loaded[name] = importlib.import_module(package_name + "." + name)
     yield SimpleNamespace(**loaded)
     for name in list(sys.modules):
@@ -399,7 +399,7 @@ async def test_real_manager_load_register_localize_and_unload(modules, monkeypat
         assert await manager.load_plugin_from_dir(ROOT, auto_install=False) == ID
         assert registry._plugin_infos[ID].status == "ready"
         assert set(manager.get_plugin_tools(ID)) == set(modules.schemas.TOOLS)
-        assert ctx.tool_mgr.register_tool.call_count == 8
+        assert ctx.tool_mgr.register_tool.call_count == len(modules.schemas.TOOLS)
         for call in ctx.tool_mgr.register_tool.call_args_list:
             assert call.kwargs["description"] == modules.i18n.TOOL_TEXTS["zh"][call.kwargs["name"]]
         instance = manager.plugin_instances[ID]
@@ -521,3 +521,216 @@ def test_other_platform_base_adapter_is_not_a_bilibili_account(modules):
     account = adapter()
     account.info.platform = "QQ"
     assert modules.accounts.available(context({account.info.name: account})) == {}
+
+@pytest.mark.asyncio
+async def test_read_comments_uses_adapter_client_for_bv_and_bounds_public_result(modules):
+    from bilibili_api.comment import CommentResourceType
+
+    account = adapter()
+    client = account.get_client()
+    child = {"rpid": 12, "member": {"mid": 42, "uname": "reply author"},
+             "content": {"message": "reply"}, "rcount": 0}
+    first = {"rpid": 9007199254740993, "member": {"mid": 43, "uname": "author"},
+             "content": {"message": "x" * 2100, "pictures": [{"img_src": "https://i0.hdslb.com/image.png"}]},
+             "ctime": 123, "like": 7, "rcount": 4, "replies": [dict(child, rpid=12 + index) for index in range(4)],
+             "private": "do not return"}
+    client.get_comments_lazy = AsyncMock(return_value={"top_replies": [first], "replies": [first, dict(first, rpid=99)],
+                                                      "cursor": {"is_end": False}})
+    account.get_client = Mock(return_value=client)
+    account.feed.get_feed = AsyncMock()
+    instance = await plugin(modules, {account.info.name: account}, enable_comment=False)
+    result = unpack(await instance.bili_comments(target={"resource_type": "video", "id": BV}, count=1))
+    client.get_comments_lazy.assert_awaited_once_with(oid=170001, type_=CommentResourceType.VIDEO)
+    account.get_client.assert_called_once_with()
+    account.feed.get_feed.assert_not_awaited()
+    assert result["ok"] and result["first_batch_only"] and result["has_more"] and result["truncated"]
+    assert "do not return" not in json.dumps(result)
+    item = result["comments"][0]
+    assert item["comment_id"] == "9007199254740993" and item["root_comment_id"] == item["comment_id"]
+    assert item["pinned"] and len(item["text"]) == 2000 and item["text_truncated"]
+    assert len(item["replies"]) == 3 and not item["replies_complete"]
+    assert item["replies"][0]["root_comment_id"] == item["comment_id"]
+    assert item["replies"][0]["parent_comment_id"] == item["comment_id"]
+    assert item["images"] == ["https://i0.hdslb.com/image.png"]
+
+
+@pytest.mark.asyncio
+async def test_read_dynamic_comments_resolves_actual_resource_through_client(modules):
+    from bilibili_api.comment import CommentResourceType
+
+    account = adapter()
+    client = account.get_client()
+    client.get_dynamic_info = AsyncMock(return_value={"item": {"id_str": "100", "type": "DYNAMIC_TYPE_DRAW",
+        "basic": {"comment_type": 11, "comment_id_str": "200", "rid_str": "999"}}})
+    client.get_comments_lazy = AsyncMock(return_value={"replies": [], "cursor": {"is_end": True}})
+    instance = await plugin(modules, {account.info.name: account})
+    result = unpack(await instance.bili_comments(target={"resource_type": "dynamic", "id": "100"}))
+    client.get_dynamic_info.assert_awaited_once_with(100)
+    client.get_comments_lazy.assert_awaited_once_with(oid=200, type_=CommentResourceType.DYNAMIC_DRAW)
+    assert result["target"] == {"resource_type": "draw", "id": "200"}
+    assert result["comments"] == [] and result["has_more"] is False
+
+
+@pytest.mark.asyncio
+async def test_read_dynamic_without_comment_resource_does_not_fetch_comments(modules):
+    account = adapter()
+    client = account.get_client()
+    client.get_dynamic_info = AsyncMock(return_value={"item": {}})
+    client.get_comments_lazy = AsyncMock()
+    instance = await plugin(modules, {account.info.name: account})
+    result = unpack(await instance.bili_comments(target={"resource_type": "dynamic", "id": "100"}))
+    assert result["code"] == "no_comment_target"
+    client.get_comments_lazy.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_read_numeric_resource_deduplicates_comments_and_can_omit_replies(modules):
+    from bilibili_api.comment import CommentResourceType
+
+    account = adapter()
+    client = account.get_client()
+    first = {"rpid": 1, "content": {"message": "top"}, "rcount": 2,
+             "replies": [{"rpid": 2, "root": 1, "parent": 1, "content": {"message": "child"}}]}
+    client.get_comments_lazy = AsyncMock(return_value={"top_replies": [first], "replies": [first, {"rpid": 3}],
+                                                      "cursor": {"is_end": True}})
+    client.get_dynamic_info = AsyncMock()
+    instance = await plugin(modules, {account.info.name: account})
+    result = unpack(await instance.bili_comments(target={"resource_type": "video", "id": "170001"}, include_replies=False))
+    client.get_comments_lazy.assert_awaited_once_with(oid=170001, type_=CommentResourceType.VIDEO)
+    client.get_dynamic_info.assert_not_awaited()
+    assert [item["comment_id"] for item in result["comments"]] == ["1", "3"]
+    assert result["comments"][0]["replies"] == [] and result["comments"][0]["replies_complete"] is False
+    assert result["comments"][1]["replies_complete"] is None
+    assert result["has_more"] is False and not result["truncated"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("kwargs", [{"count": True}, {"count": 21}, {"include_replies": 1},
+    {"target": {"resource_type": "video", "id": "bad"}}, {"target": {"resource_type": "invalid", "id": "1"}}])
+async def test_bad_comment_read_input_does_not_call_client(modules, kwargs):
+    account = adapter()
+    client = account.get_client()
+    client.get_comments_lazy = AsyncMock()
+    client.get_dynamic_info = AsyncMock()
+    instance = await plugin(modules, {account.info.name: account})
+    arguments = {"target": {"resource_type": "video", "id": BV}, **kwargs}
+    result = unpack(await instance.bili_comments(**arguments))
+    assert result["code"] == "invalid_input"
+    client.get_comments_lazy.assert_not_awaited()
+    client.get_dynamic_info.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_comment_read_client_error_is_redacted(modules):
+    account = adapter()
+    client = account.get_client()
+    client.get_comments_lazy = AsyncMock(side_effect=RuntimeError("sessdata=private-test-value"))
+    instance = await plugin(modules, {account.info.name: account})
+    result = await instance.bili_comments(target={"resource_type": "video", "id": BV})
+    assert unpack(result)["code"] == "request_failed" and "private-test-value" not in result
+
+
+@pytest.mark.asyncio
+async def test_comment_read_empty_batch_and_unknown_cursor_are_valid(modules):
+    account = adapter()
+    client = account.get_client()
+    client.get_comments_lazy = AsyncMock(return_value={"replies": None})
+    instance = await plugin(modules, {account.info.name: account})
+    result = unpack(await instance.bili_comments(target={"resource_type": "video", "id": BV}))
+    assert result["ok"] and result["comments"] == [] and result["has_more"] is None
+
+@pytest.mark.asyncio
+async def test_user_uploads_borrow_selected_credential_and_map_public_fields(modules, monkeypatch):
+    first, selected = adapter(), adapter("bili-two", "43", sessdata="private-cookie")
+    handle = SimpleNamespace(get_videos=AsyncMock(return_value={
+        "list": {"vlist": [
+            {"bvid": BV, "aid": 170001, "author": "Uploader", "title": "<em>Video</em>",
+             "description": "x" * 3100, "created": 1700000000, "length": "01:02",
+             "pic": "//i0.hdslb.com/cover.jpg", "play": 100, "video_review": 12,
+             "private": "private-body"},
+            {"aid": 170002, "title": "Second", "created": 1700000001, "length": "00:30"},
+            {"aid": 170003, "title": "Beyond requested size"},
+        ]}, "page": {"count": 5}, "private": "private-body",
+    }))
+    factory = Mock(return_value=handle)
+    transport = Mock()
+    monkeypatch.setattr(modules.user_videos.sdk_user, "User", factory)
+    monkeypatch.setattr(modules.user_videos, "get_bilibili_client", transport)
+    instance = await plugin(modules, {first.info.name: first, selected.info.name: selected})
+    raw = await instance.bili_user_videos(author_id="9007199254740993", adapter_name=selected.info.name,
+                                         page=2, count=2, keyword="  test  ", order="view")
+    result = unpack(raw)
+    factory.assert_called_once_with(uid=9007199254740993, credential=selected.credential)
+    transport.assert_called_once_with()
+    handle.get_videos.assert_awaited_once_with(pn=2, ps=2, keyword="test", order=modules.user_videos.sdk_user.VideoOrder.VIEW)
+    assert result["ok"] and result["adapter_name"] == selected.info.name
+    assert result["author_id"] == "9007199254740993" and result["next_page"] == 3
+    assert result["total"] == 5 and result["has_more"] and len(result["items"]) == 2
+    item = result["items"][0]
+    assert item["ref"] == item["comment_target"] == {"resource_type": "video", "id": BV}
+    assert item["author"] == {"id": "9007199254740993", "name": "Uploader"}
+    assert item["title"] == "Video" and item["duration"] == 62
+    assert item["published_at"] == "2023-11-14T22:13:20+00:00"
+    assert len(item["text"]) == 3000 and item["cover_url"] == "https://i0.hdslb.com/cover.jpg"
+    assert item["stats"] == {"view": 100, "danmaku": 12}
+    assert "private-cookie" not in raw and "private-body" not in raw
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("order,enum", [("pubdate", "PUBDATE"), ("view", "VIEW"), ("favorite", "FAVORITE")])
+async def test_user_upload_sorting_and_empty_page(modules, monkeypatch, order, enum):
+    account = adapter()
+    handle = SimpleNamespace(get_videos=AsyncMock(return_value={"list": {"vlist": None}, "page": {"count": 0}}))
+    monkeypatch.setattr(modules.user_videos.sdk_user, "User", Mock(return_value=handle))
+    monkeypatch.setattr(modules.user_videos, "get_bilibili_client", Mock())
+    instance = await plugin(modules, {account.info.name: account})
+    result = unpack(await instance.bili_user_videos(author_id="42", order=order))
+    handle.get_videos.assert_awaited_once_with(pn=1, ps=5, keyword="", order=getattr(modules.user_videos.sdk_user.VideoOrder, enum))
+    assert result["ok"] and result["items"] == [] and result["total"] == 0
+    assert result["has_more"] is False and result["next_page"] is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("arguments,max_count", [
+    ({"author_id": "0"}, 20), ({"author_id": True}, 20),
+    ({"page": 0}, 20), ({"page": True}, 20), ({"page": 10001}, 20),
+    ({"count": 0}, 20), ({"count": True}, 20), ({"count": 21}, 20), ({"count": 31}, 100),
+    ({"keyword": None}, 20), ({"keyword": "x" * 257}, 20),
+    ({"order": "random"}, 20), ({"order": []}, 20),
+])
+async def test_invalid_user_upload_parameters_do_not_call_sdk(modules, monkeypatch, arguments, max_count):
+    account = adapter()
+    factory, transport = Mock(), Mock()
+    monkeypatch.setattr(modules.user_videos.sdk_user, "User", factory)
+    monkeypatch.setattr(modules.user_videos, "get_bilibili_client", transport)
+    instance = await plugin(modules, {account.info.name: account}, max_count=max_count)
+    result = unpack(await instance.bili_user_videos(**{"author_id": "42", **arguments}))
+    assert result["code"] == "invalid_input"
+    factory.assert_not_called()
+    transport.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_user_upload_unknown_total_and_sdk_failure_redaction(modules, monkeypatch):
+    account = adapter()
+    handle = SimpleNamespace(get_videos=AsyncMock(return_value={"list": {"vlist": []}}))
+    monkeypatch.setattr(modules.user_videos.sdk_user, "User", Mock(return_value=handle))
+    monkeypatch.setattr(modules.user_videos, "get_bilibili_client", Mock())
+    instance = await plugin(modules, {account.info.name: account})
+    result = unpack(await instance.bili_user_videos(author_id="42"))
+    assert result["ok"] and result["total"] is None and result["has_more"] is None
+    handle.get_videos.side_effect = RuntimeError("SESSDATA=private-sdk-exception")
+    raw = await instance.bili_user_videos(author_id="42")
+    assert unpack(raw)["code"] == "request_failed" and "private-sdk-exception" not in raw
+
+
+def test_user_upload_schema_has_distinct_page_and_keyword_semantics(modules):
+    import jsonschema
+
+    for lang in ("en", "zh"):
+        schema = modules.schemas.tool_schema("bili_user_videos", lang)["params"]
+        jsonschema.validate({"author_id": "42", "keyword": "", "page": 2, "count": 30}, schema)
+        assert schema["required"] == ["author_id"]
+        assert schema["properties"]["page"]["description"] == modules.i18n.PARAM_TEXTS[lang]["user_video_page"]
+        with pytest.raises(jsonschema.ValidationError):
+            jsonschema.validate({"author_id": "42", "count": 31}, schema)

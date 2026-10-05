@@ -99,14 +99,14 @@
     "name": "Maximum Page Items",
     "type": "integer",
     "default": 20,
-    "hint": "Maximum feed/search page count (5-100); tools default to 5.",
+    "hint": "Maximum feed/search/upload page or comment batch count (5-100); tools default to 5. Upload pages are also capped at 30.",
     "locales": {
       "zh": {
-        "hint": "浏览或搜索每页数量上限，范围5-100；工具默认返回5条。",
+        "hint": "浏览、搜索、投稿页或首批评论的数量上限，范围5-100；工具默认返回5条，投稿页另有上限30。",
         "name": "每页数量上限"
       },
       "en": {
-        "hint": "Maximum feed/search page count (5-100); tools default to 5.",
+        "hint": "Maximum feed/search/upload page or comment batch count (5-100); tools default to 5. Upload pages are also capped at 30.",
         "name": "Maximum Page Items"
       }
     }

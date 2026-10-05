@@ -3,6 +3,7 @@
 from copy import deepcopy
 
 from .i18n import PARAM_TEXTS, TOOL_TEXTS, language
+from .user_videos import MAX_PAGE_SIZE
 
 
 def element_schema(mentions=False):
@@ -33,7 +34,9 @@ FIELDS = {
     "language": {"type": "string", "maxLength": 32},
     "entry_offset": {"type": "integer", "minimum": 0},
     "max_entries": {"type": "integer", "minimum": 1, "maximum": 100},
+    "order": {"type": "string", "enum": ["pubdate", "view", "favorite"]},
     "liked": {"type": "boolean"},
+    "include_replies": {"type": "boolean"},
     "target": {"type": "object", "properties": {
         "resource_type": {"type": "string"}, "id": {"type": "string", "minLength": 1, "maxLength": 128},
     }, "required": ["resource_type", "id"], "additionalProperties": False},
@@ -48,6 +51,7 @@ FIELDS = {
 
 TOOLS = {
     "bili_accounts": ([], []),
+    "bili_user_videos": (["adapter_name", "author_id", "page", "count", "keyword", "order"], ["author_id"]),
     "bili_feed": (["adapter_name", "source", "count", "kinds", "author_id", "cursor"], []),
     "bili_search": (["adapter_name", "keyword", "kind", "count", "author_id", "cursor"], ["keyword"]),
     "bili_video_info": (["adapter_name", "video", "page"], ["video"]),
@@ -55,6 +59,7 @@ TOOLS = {
     "bili_like_video": (["adapter_name", "video", "liked"], ["video", "liked"]),
     "bili_comment": (["adapter_name", "target", "content", "root", "parent"], ["target", "content"]),
     "bili_post": (["adapter_name", "content", "options"], ["content"]),
+    "bili_comments": (["adapter_name", "target", "count", "include_replies"], ["target"]),
 }
 
 
@@ -66,6 +71,11 @@ def tool_schema(name, lang="en"):
         properties["content"] = element_schema(mentions=True)
     for key, value in properties.items():
         value["description"] = PARAM_TEXTS[lang][key]
+    if name == "bili_user_videos":
+        properties["count"]["maximum"] = MAX_PAGE_SIZE
+        properties["keyword"].pop("minLength")
+        for key in ("page", "count", "keyword"):
+            properties[key]["description"] = PARAM_TEXTS[lang]["user_video_" + key]
     return {
         "name": name, "description": TOOL_TEXTS[lang][name],
         "params": {"type": "object", "properties": properties, "required": list(required), "additionalProperties": False},

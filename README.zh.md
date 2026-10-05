@@ -2,7 +2,7 @@
 
 [English](README.md)
 
-B站增强（`kira-ai-plugin-bili-enhance`）为 KiraAI 提供八个 LLM 原生工具，用于浏览 B 站内容、读取视频信息和 CC 字幕、点赞、评论及发布动态。账户复用内置 B 站适配器，无需在插件中重复配置 Cookie，无命令入口或后台轮询。
+B站增强（`kira-ai-plugin-bili-enhance`）为 KiraAI 提供十个 LLM 原生工具，用于浏览 B 站内容、读取视频信息和 CC 字幕、点赞、读取和发表评论及发布动态。账户复用内置 B 站适配器，无需在插件中重复配置 Cookie，无命令入口或后台轮询。
 
 ## 安装与账户
 
@@ -18,17 +18,27 @@ B站增强（`kira-ai-plugin-bili-enhance`）为 KiraAI 提供八个 LLM 原生�
 | 工具 | 行为 |
 | --- | --- |
 | `bili_accounts` | 列出已加载实例的名称、UID、能力、原生表情 ID、评论/动态格式、操作开关和结果上限。 |
+| `bili_user_videos` | 按 UID 获取用户空间投稿视频，支持页码、可选关键词和排序。 |
 | `bili_feed` | 浏览推荐视频（recommended）、关注动态（following）或指定用户动态（user，需 author_id）；支持类型、数量、作者筛选与游标分页。 |
 | `bili_search` | 按非空 keyword 搜索 video 视频或 article 专栏，支持作者筛选和原样游标分页。 |
 | `bili_video_info` | 读取 BV 号、B站视频链接或 https://b23.tv/ 短链；page 为从1开始的分P，默认取链接 p 参数或1。 |
 | `bili_video_subtitle` | 获取指定分P的 CC 字幕，选择 language，以 entry_offset 和 max_entries 分段预览，并返回所选轨道的完整 SRT 附件。 |
 | `bili_like_video` | 显式设置 liked=true 点赞、liked=false 取消点赞，不提供切换或自动重试。 |
+| `bili_comments` | 读取视频或动态下的首批评论，可选包含每条评论附带的最多三条回复。 |
 | `bili_comment` | 对资源引用发表评论，或通过 root 和 parent 评论 ID 回复。 |
 | `bili_post` | 发布文字或图文动态，可选话题、投票、直播预约、定时发布和评论选项。 |
 
 涉及账户的工具接受 `adapter_name`。选择顺序为明确指定的实例、当前 B 站会话、配置的默认实例、唯一可用实例。明确实例或默认实例无效时直接失败，不切换账户；存在多个候选且无法确定时返回错误，要求指定账户。实例名是用户配置名称，不等于平台名称。每次调用重新获取账户对象，适配器重载后不会沿用旧引用。
 
 Feed 游标属于原账户和查询，请沿用相同来源、筛选条件与账户。当前适配器游标在十分钟后或停止时失效。筛选后的空页仍可能有 `has_more=true`。count 表示本页最大数量，工具不会为凑足数量无限抓取。不提供通用动态搜索或完整评论列表分页。
+
+bili_comments 接受与发表评论相同的 target 资源对象。视频支持 BV 号，动态 ID 会解析为实际评论资源。count（默认5）限制一级评论数量，include_replies=false 不返回附带回复。每条评论正文最多返回2,000字符。结果包含评论/作者ID、正文、创建时间、点赞数、图片和回复数，并标记 first_batch_only=true；响应信息不足时，has_more 或 replies_complete 可为 null。不继续请求后续分页或缺失的楼中楼。调用 bili_comment 回复时，将结果中的 root_comment_id 作为 root、comment_id 作为 parent。关闭评论写入开关不影响读取。
+
+`bili_user_videos` 复用所选适配器的 credential，直接调用 `bilibili_api.user.User.get_videos()`。`author_id` 使用 UID 字符串，可选 `page`（默认 1）、`count`（默认 5，上限 `min(max_count, 30)`）、`keyword`（默认空）及 `order`（`pubdate` 最新发布、`view` 最多播放、`favorite` 最多收藏）。结果包含 `items`、`total`、`has_more`、`next_page`；SDK 响应缺少总数时，`total`、`has_more` 为 null。使用 `next_page` 继续时需保持账户、UID、每页数量和筛选条件不变。每条视频的 `ref`、`comment_target` 可用于其他工具。用户动态仍通过 `bili_feed` 的 `source=user` 和 `author_id` 获取；从动态流筛选视频不等于空间投稿列表。
+
+```json
+{"adapter_name":"my-bili","author_id":"626885218","page":1,"count":5,"order":"pubdate"}
+```
 
 ## 内容与目标引用
 
@@ -73,7 +83,7 @@ entry_offset 从0开始，使用 next_entry_offset 继续读取，直到返回 n
 | enable_post | true | 启用动态发布工具。 |
 | request_timeout | 60 | 含排队时间的工具总超时，单位秒，范围5–180。 |
 | max_concurrency | 3 | 本插件并发操作数，范围1–16。 |
-| max_count | 20 | 浏览/搜索每页数量上限，范围5–100，工具默认5条。 |
+| max_count | 20 | 浏览/搜索/投稿每页或首批评论数量上限，范围5–100，工具默认5条；投稿页另有插件上限30。 |
 | subtitle_max_chars | 12000 | 字幕预览字符预算，范围100–60000。 |
 | subtitle_max_bytes | 2097152 | 字幕下载字节上限，范围1024–10485760，SRT上限为其两倍。 |
 

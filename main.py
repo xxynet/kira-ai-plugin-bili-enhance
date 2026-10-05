@@ -6,7 +6,7 @@ import json
 from core.agent.tool import ToolResult
 from core.plugin import BasePlugin, register
 
-from . import accounts, feed
+from . import accounts, feed, user_videos
 from .i18n import PluginError, language, tr
 from .schemas import TOOLS, tool_schema
 from .video import VideoService
@@ -59,7 +59,9 @@ class BiliEnhancePlugin(BasePlugin):
                     meta = tool_schema(name, language(lang))
                     component.tools[name]["description"] = meta["description"]
                     if 'count' in meta['params']['properties']:
-                        meta['params']['properties']['count']['maximum'] = settings['max_count']
+                        meta['params']['properties']['count']['maximum'] = min(
+                            meta['params']['properties']['count']['maximum'], settings['max_count'],
+                        )
                     component.tools[name]['parameters'] = meta['params']
         self._closing = False
 
@@ -169,3 +171,18 @@ class BiliEnhancePlugin(BasePlugin):
     @register.tool(**tool_schema("bili_post"))
     async def bili_post(self, event=None, *, content, adapter_name=None, options=None):
         return await self._execute(event, adapter_name, lambda adapter: feed.post(adapter, content=content, options=options), action="post")
+
+    @register.tool(**tool_schema("bili_comments"))
+    async def bili_comments(self, event=None, *, target, adapter_name=None, count=5, include_replies=True):
+        async def operation(adapter):
+            result = await feed.comments(adapter, target=target, count=count, include_replies=include_replies,
+                                         max_count=self.settings["max_count"])
+            return {**result, "note": tr(self.ctx.get_lang(), "comments_note")}
+        return await self._execute(event, adapter_name, operation)
+
+    @register.tool(**tool_schema("bili_user_videos"))
+    async def bili_user_videos(self, event=None, *, author_id, adapter_name=None, page=1, count=5, keyword="", order="pubdate"):
+        return await self._execute(event, adapter_name, lambda adapter: user_videos.browse(
+            adapter, author_id=author_id, page=page, count=count, keyword=keyword, order=order,
+            max_count=self.settings["max_count"],
+        ))

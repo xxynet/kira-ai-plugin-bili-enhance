@@ -2,7 +2,7 @@
 
 [中文说明](README.zh.md)
 
-BiliBili Enhance (`kira-ai-plugin-bili-enhance`) gives KiraAI eight LLM-native tools for browsing Bilibili, reading video details and CC subtitles, liking videos, commenting and publishing dynamics. It uses accounts already configured in the built-in Bilibili adapter. No separate cookies, commands or background polling are required.
+BiliBili Enhance (`kira-ai-plugin-bili-enhance`) gives KiraAI ten LLM-native tools for browsing Bilibili, reading video details and CC subtitles, liking videos, reading/posting comments and publishing dynamics. It uses accounts already configured in the built-in Bilibili adapter. No separate cookies, commands or background polling are required.
 
 ## Setup
 
@@ -18,17 +18,27 @@ This plugin does not start, stop or log in adapters. An instance appearing in `b
 | Tool | Behavior |
 | --- | --- |
 | `bili_accounts` | List loaded account names, UIDs, capabilities, native emoji IDs, comment/post formats, action switches and result limits. |
+| `bili_user_videos` | List a user's space uploads by UID, with page numbers, optional keywords and sorting. |
 | `bili_feed` | Browse `recommended` videos, `following` dynamics or `user` dynamics (requires `author_id`). Optional `kinds`, `count`, `cursor` and author filtering. |
 | `bili_search` | Search a nonempty `keyword` with `kind=video` or `article`; optional author filter and opaque pagination cursor. |
 | `bili_video_info` | Read a BV ID, a Bilibili video URL or a `https://b23.tv/` short link. `page` selects a one-based part; otherwise use URL `p` or 1. |
 | `bili_video_subtitle` | Read a part's CC subtitles, select `language`, preview with `entry_offset` and `max_entries`, and return the complete selected track as a unique SRT attachment. |
 | `bili_like_video` | Explicitly set `liked=true` or `liked=false`. No toggle or automatic retry. |
+| `bili_comments` | Read the first batch of comments on a video or dynamic; optionally include up to three attached replies per comment. |
 | `bili_comment` | Comment on a resource reference, or reply with `root` and `parent` comment IDs. |
 | `bili_post` | Publish text/image dynamics; optional topics, votes, live reservations, scheduled time and comment options. |
 
 Tools that act on an account accept `adapter_name`. Selection order is explicit name, current Bilibili session, configured default, then the sole available Bilibili instance. Invalid explicit/default names fail without switching accounts. An ambiguous selection fails and asks for an account name. Names are configuration instance names, not platform names. Account objects are fetched for each call so reloading an adapter does not leave a stale reference.
 
 Feed cursors remain opaque and tied to the originating account and query. Reuse the same source, filters and account. Cursors expire after ten minutes or adapter stop under the current adapter implementation. A filtered empty page can still have `has_more=true`. `count` is a per-page maximum; tools do not fetch indefinitely to fill it. General dynamic search and complete comment-list pagination are not provided.
+
+`bili_comments` accepts the same `target` resource object as commenting. BV video IDs are supported; dynamic IDs are resolved to their actual comment resource. Use `count` (default 5) to limit top-level comments and `include_replies=false` to omit attached replies. Comment text is capped at 2,000 characters per item. Responses include comment/author IDs, text, creation time, likes, images and reply counts, with `first_batch_only=true`; `has_more` or `replies_complete` can be null when the response does not provide enough information. This tool does not fetch more pages or missing thread replies. To reply with `bili_comment`, use a returned comment's `root_comment_id` as `root` and its `comment_id` as `parent`. Reading remains available when the comment-writing switch is off.
+
+`bili_user_videos` uses the selected adapter's existing credential with `bilibili_api.user.User.get_videos()`. Supply `author_id` as a UID string. Optional parameters: `page` (default 1), `count` (default 5, at most `min(max_count, 30)`), `keyword` (default empty) and `order` (`pubdate`, `view` or `favorite`). Results include `items`, `total`, `has_more` and `next_page`; totals and `has_more` are null if the SDK response omits the count. To continue, use `next_page` and keep the account, UID, page size and filters unchanged. Each item provides a video `ref` and `comment_target` for other tools. Use `bili_feed` with `source=user` and `author_id` for dynamics; filtering that stream to video does not list the space upload archive.
+
+```json
+{"adapter_name":"my-bili","author_id":"626885218","page":1,"count":5,"order":"pubdate"}
+```
 
 ## Content and references
 
@@ -73,7 +83,7 @@ All labels, tool descriptions and errors support English and Chinese. Language f
 | `enable_post` | `true` | Enable dynamic publishing calls. |
 | `request_timeout` | `60` | Total tool timeout including queueing, in seconds; range 5–180. |
 | `max_concurrency` | `3` | Concurrent operations per plugin; range 1–16. |
-| `max_count` | `20` | Maximum feed/search page items; range 5–100. Tool default is 5. |
+| `max_count` | `20` | Maximum feed/search/upload page or first comment batch items; range 5–100. Tool default is 5; space upload pages also have a plugin limit of 30. |
 | `subtitle_max_chars` | `12000` | Subtitle preview character budget; range 100–60000. |
 | `subtitle_max_bytes` | `2097152` | Subtitle download byte limit; range 1024–10485760. SRT is capped at twice this size. |
 
