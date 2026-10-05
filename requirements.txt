@@ -1,0 +1,2 @@
+bilibili-api-python>=17.4.2
+httpx>=0.28.1

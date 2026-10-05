@@ -1,0 +1,146 @@
+{
+  "default_adapter": {
+    "name": "Default Adapter",
+    "type": "string",
+    "default": "",
+    "hint": "Configured Bilibili instance name. Leave empty to use the current Bilibili session or the sole available account.",
+    "locales": {
+      "zh": {
+        "hint": "B站实例的配置名称，留空使用当前B站会话或唯一可用账户。",
+        "name": "默认适配器"
+      },
+      "en": {
+        "hint": "Configured Bilibili instance name. Leave empty to use the current Bilibili session or the sole available account.",
+        "name": "Default Adapter"
+      }
+    }
+  },
+  "enable_like": {
+    "name": "Enable Video Likes",
+    "type": "switch",
+    "default": true,
+    "hint": "Allow bili_like_video to set or remove a like.",
+    "locales": {
+      "zh": {
+        "hint": "允许 bili_like_video 点赞或取消点赞。",
+        "name": "启用视频点赞"
+      },
+      "en": {
+        "hint": "Allow bili_like_video to set or remove a like.",
+        "name": "Enable Video Likes"
+      }
+    }
+  },
+  "enable_comment": {
+    "name": "Enable Comments",
+    "type": "switch",
+    "default": true,
+    "hint": "Allow bili_comment. This does not change automatic incoming comment processing.",
+    "locales": {
+      "zh": {
+        "hint": "允许 bili_comment，不改变入站评论的自动处理流程。",
+        "name": "启用发表评论"
+      },
+      "en": {
+        "hint": "Allow bili_comment. This does not change automatic incoming comment processing.",
+        "name": "Enable Comments"
+      }
+    }
+  },
+  "enable_post": {
+    "name": "Enable Dynamic Publishing",
+    "type": "switch",
+    "default": true,
+    "hint": "Allow bili_post to publish dynamics.",
+    "locales": {
+      "zh": {
+        "hint": "允许 bili_post 发布动态。",
+        "name": "启用动态发布"
+      },
+      "en": {
+        "hint": "Allow bili_post to publish dynamics.",
+        "name": "Enable Dynamic Publishing"
+      }
+    }
+  },
+  "request_timeout": {
+    "name": "Request Timeout",
+    "type": "integer",
+    "default": 60,
+    "hint": "Total tool request timeout including queueing, in seconds (5-180). Write requests are never retried automatically.",
+    "locales": {
+      "zh": {
+        "hint": "工具总超时含排队时间，单位秒，范围5-180；写入请求不自动重试。",
+        "name": "请求超时"
+      },
+      "en": {
+        "hint": "Total tool request timeout including queueing, in seconds (5-180). Write requests are never retried automatically.",
+        "name": "Request Timeout"
+      }
+    }
+  },
+  "max_concurrency": {
+    "name": "Maximum Concurrency",
+    "type": "integer",
+    "default": 3,
+    "hint": "Maximum concurrent tool operations (1-16).",
+    "locales": {
+      "zh": {
+        "hint": "同时执行工具操作的上限，范围1-16。",
+        "name": "最大并发数"
+      },
+      "en": {
+        "hint": "Maximum concurrent tool operations (1-16).",
+        "name": "Maximum Concurrency"
+      }
+    }
+  },
+  "max_count": {
+    "name": "Maximum Page Items",
+    "type": "integer",
+    "default": 20,
+    "hint": "Maximum feed/search page count (5-100); tools default to 5.",
+    "locales": {
+      "zh": {
+        "hint": "浏览或搜索每页数量上限，范围5-100；工具默认返回5条。",
+        "name": "每页数量上限"
+      },
+      "en": {
+        "hint": "Maximum feed/search page count (5-100); tools default to 5.",
+        "name": "Maximum Page Items"
+      }
+    }
+  },
+  "subtitle_max_chars": {
+    "name": "Subtitle Preview Characters",
+    "type": "integer",
+    "default": 12000,
+    "hint": "Maximum subtitle text characters returned per call (100-60000). The complete track is attached as SRT.",
+    "locales": {
+      "zh": {
+        "hint": "每次调用返回的字幕文本字符上限，范围100-60000；完整轨道以SRT附件提供。",
+        "name": "字幕预览字符上限"
+      },
+      "en": {
+        "hint": "Maximum subtitle text characters returned per call (100-60000). The complete track is attached as SRT.",
+        "name": "Subtitle Preview Characters"
+      }
+    }
+  },
+  "subtitle_max_bytes": {
+    "name": "Subtitle Download Bytes",
+    "type": "integer",
+    "default": 2097152,
+    "hint": "Maximum downloaded subtitle response bytes (1024-10485760). SRT output is limited to twice this size.",
+    "locales": {
+      "zh": {
+        "hint": "字幕响应下载字节上限，范围1024-10485760；SRT输出限制为此值的两倍。",
+        "name": "字幕下载大小上限"
+      },
+      "en": {
+        "hint": "Maximum downloaded subtitle response bytes (1024-10485760). SRT output is limited to twice this size.",
+        "name": "Subtitle Download Bytes"
+      }
+    }
+  }
+}
