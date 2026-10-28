@@ -2,101 +2,74 @@
 
 [English](README.md)
 
-B站增强（`kira-ai-plugin-bili-enhance`）为 KiraAI 提供十个 LLM 原生工具，用于浏览 B 站内容、读取视频信息和 CC 字幕、点赞、读取和发表评论及发布动态。账户复用内置 B 站适配器，无需在插件中重复配置 Cookie，无命令入口或后台轮询。
+为 KiraAI 提供 B 站内容浏览、视频搜索、字幕读取、画面查看、弹幕、评论、点赞和动态发布功能。复用内置 B 站适配器的账户，无需单独配置 Cookie。
 
-## 安装与账户
+## 安装
 
-1. 使用已具备当前类型化 Feed 能力和消息格式元数据接口的 KiraAI 版本，Python 要求 3.10+。
-2. 将本目录放在 `data/plugins/kira-ai-plugin-bili-enhance/`，通过 KiraAI 插件管理加载并启用。
-3. 配置并启用内置 B 站适配器账户，登录凭据填写在适配器中；写入需要该账户的 `sessdata` 和 `bili_jct`。账户配置与认证由适配器管理。
-4. 让 AI 列出 B 站账户或调用工具。可在插件配置的 `default_adapter` 中指定默认实例名。
+1. 使用 Python 3.10+，将插件放入 `data/plugins/kira-ai-plugin-bili-enhance/`。
+2. 在 KiraAI 中配置并启用内置 B 站适配器账户。
+3. 在插件管理中加载并启用「B站增强」。
 
-插件不启动、停止适配器或进行登录。`bili_accounts` 中出现某实例只表示已启用且加载，不代表登录或连接已经验证。仅使用 Feed 的适配器可以在其配置中设置 `enable_im=false`。插件沿用主项目已有依赖：`bilibili-api-python>=17.4.2`、`httpx>=0.28.1`。
+多个账户可通过 `default_adapter` 设置默认实例，也可以在调用时指定 `adapter_name`；否则优先使用当前 B 站会话或唯一可用账户。列出账户不代表已验证登录状态。
 
-## 工具
+## 功能
 
-| 工具 | 行为 |
+| 工具 | 用途 |
 | --- | --- |
-| `bili_accounts` | 列出已加载实例的名称、UID、能力、原生表情 ID、评论/动态格式、操作开关和结果上限。 |
-| `bili_user_videos` | 按 UID 获取用户空间投稿视频，支持页码、可选关键词和排序。 |
-| `bili_feed` | 浏览推荐视频（recommended）、关注动态（following）或指定用户动态（user，需 author_id）；支持类型、数量、作者筛选与游标分页。 |
-| `bili_search` | 按非空 keyword 搜索 video 视频或 article 专栏，支持作者筛选和原样游标分页。 |
-| `bili_video_info` | 读取 BV 号、B站视频链接或 https://b23.tv/ 短链；page 为从1开始的分P，默认取链接 p 参数或1。 |
-| `bili_video_subtitle` | 获取指定分P的 CC 字幕，选择 language，以 entry_offset 和 max_entries 分段预览，并返回所选轨道的完整 SRT 附件。 |
-| `bili_like_video` | 显式设置 liked=true 点赞、liked=false 取消点赞，不提供切换或自动重试。 |
-| `bili_comments` | 读取视频或动态下的首批评论，可选包含每条评论附带的最多三条回复。 |
-| `bili_comment` | 对资源引用发表评论，或通过 root 和 parent 评论 ID 回复。 |
-| `bili_post` | 发布文字或图文动态，可选话题、投票、直播预约、定时发布和评论选项。 |
+| `bili_accounts` | 查看可用账户及支持的操作。 |
+| `bili_user_videos` | 查看指定 UP 主的投稿，支持分页、关键词和排序。 |
+| `bili_feed` | 浏览首页推荐、关注动态或指定用户动态。 |
+| `bili_search` | 按关键词搜索视频或专栏。 |
+| `bili_video_info` | 查看视频信息及分 P。 |
+| `bili_video_subtitle` | 读取 CC 字幕，提供分段预览和完整 SRT 附件。 |
+| `bili_frames` | 将视频画面合成一张带时间标注的图片，默认3帧，最多6帧。 |
+| `bili_danmaku` | 读取弹幕，每次一个六分钟分段，默认返回5条。 |
+| `bili_like_video` | 点赞或取消点赞。 |
+| `bili_comments` | 读取视频或动态的首批评论及部分回复。 |
+| `bili_comment` | 发表评论或回复。 |
+| `bili_post` | 发布文字或图文动态，支持 @用户、话题和定时发布等选项。 |
 
-涉及账户的工具接受 `adapter_name`。选择顺序为明确指定的实例、当前 B 站会话、配置的默认实例、唯一可用实例。明确实例或默认实例无效时直接失败，不切换账户；存在多个候选且无法确定时返回错误，要求指定账户。实例名是用户配置名称，不等于平台名称。每次调用重新获取账户对象，适配器重载后不会沿用旧引用。
+## 使用
 
-Feed 游标属于原账户和查询，请沿用相同来源、筛选条件与账户。当前适配器游标在十分钟后或停止时失效。筛选后的空页仍可能有 `has_more=true`。count 表示本页最大数量，工具不会为凑足数量无限抓取。不提供通用动态搜索或完整评论列表分页。
+直接用自然语言让 AI 操作，例如：
 
-bili_comments 接受与发表评论相同的 target 资源对象。视频支持 BV 号，动态 ID 会解析为实际评论资源。count（默认5）限制一级评论数量，include_replies=false 不返回附带回复。每条评论正文最多返回2,000字符。结果包含评论/作者ID、正文、创建时间、点赞数、图片和回复数，并标记 first_batch_only=true；响应信息不足时，has_more 或 replies_complete 可为 null。不继续请求后续分页或缺失的楼中楼。调用 bili_comment 回复时，将结果中的 root_comment_id 作为 root、comment_id 作为 parent。关闭评论写入开关不影响读取。
+- “搜一下 B 站最近的 Python 教程。”
+- “看看这个 UP 主最新发了什么视频。”
+- “读取这个视频第二 P 的字幕。”
+- “看看这个视频30秒和60秒处的画面，再读一些弹幕。”
 
-`bili_user_videos` 复用所选适配器的 credential，直接调用 `bilibili_api.user.User.get_videos()`。`author_id` 使用 UID 字符串，可选 `page`（默认 1）、`count`（默认 5，上限 `min(max_count, 30)`）、`keyword`（默认空）及 `order`（`pubdate` 最新发布、`view` 最多播放、`favorite` 最多收藏）。结果包含 `items`、`total`、`has_more`、`next_page`；SDK 响应缺少总数时，`total`、`has_more` 为 null。使用 `next_page` 继续时需保持账户、UID、每页数量和筛选条件不变。每条视频的 `ref`、`comment_target` 可用于其他工具。用户动态仍通过 `bili_feed` 的 `source=user` 和 `author_id` 获取；从动态流筛选视频不等于空间投稿列表。
+视频工具接受 BV 号、B站视频链接和 b23.tv 短链。`page` 用于选择分 P，默认使用链接指定的分 P 或第1P。
 
-```json
-{"adapter_name":"my-bili","author_id":"626885218","page":1,"count":5,"order":"pubdate"}
-```
+画面工具通过 `num` 选择数量，或用 `at` 指定秒数；画面合并成一张图并标注实际采样时间，可能看不清小字或遗漏短暂动作。AI 查看画面需要启用会话图片识别，并配置支持看图的模型或 VLM。
 
-## 内容与目标引用
+弹幕工具通过 `segment` 选择分段（从1开始），`count` 控制数量；可按返回的 `next_segment` 继续。增大 `count` 可查看当前分段的更多弹幕，但受配置上限限制。
 
-评论优先使用查询结果的 `comment_target`，否则使用 `ref`。资源 ID 和 UID 应使用字符串以保留整数精度，BV 转换和动态评论资源解析交给适配器。
-
-```json
-{
-  "adapter_name": "my-bili",
-  "target": {"resource_type": "video", "id": "BV17x411w7KC"},
-  "content": [{"type": "text", "text": "谢谢分享！"}]
-}
-```
-
-回复时同时提供 root（线程根评论 ID）和 parent（当前评论 ID），这两个参数均不是 IM 会话标识。
-
-content 是最多100个元素的有序列表：
-
-- 文字：`{"type":"text","text":"你好"}`，合计文字最多20,000字符。
-- 图片：`{"type":"image","file":"https://example.com/image.png"}`，或 KiraAI 媒体元素支持的本地文件路径。
-- 表情：`{"type":"emoji","id":"..."}`，从所选账户的 bili_accounts 元数据复制原生 ID。
-- @用户，仅动态可用：`{"type":"at","id":"12345","nickname":"可选昵称"}`。
-
-动态 options 只接受 topic_id、vote_id、live_reserve_id、send_time、up_choose_comment、close_comment。ID选项使用正整数字符串。send_time 使用含明确时区的 ISO 8601，例如 `2030-01-01T12:00:00+08:00`。不允许覆盖账户凭据。平台自身的限制和审核仍然适用，成功回执表示接口接受了请求，不表示内容已经公开可见。
-
-## 字幕
-
-语言匹配不区分大小写，归一化下划线/连字符、中文地区/书写体系代码和 ai- 前缀。指定语言没有匹配轨道时失败，不静默切换为其他语言；留空使用第一条轨道。响应提供实际 language 和可用语言列表，后续分页请使用返回的实际语言。
-
-entry_offset 从0开始，使用 next_entry_offset 继续读取，直到返回 null。每次最多返回 max_entries 条（默认20，上限100），并受字符预算限制。单条过长时可能截断并返回 text_truncated=true；SRT附件保留所选轨道的完整内容。文件保存到 `data/temp/bili_enhance_subtitles/`，使用唯一名称，卸载插件后仍保留以供附件发送，并遵循应用的临时文件保留机制。插件只读取现有 CC 字幕，不进行语音识别或下载视频。
-
-短链限制重定向次数，只接受支持的 HTTPS B站域名。字幕下载验证官方字幕域名、限制解压后的响应大小，并设置重定向上限和超时。文件写入及字幕解析移出事件循环。
+字幕只读取已有 CC 字幕，不进行语音转写。评论仅返回首批及部分回复，不提供完整评论分页。
 
 ## 配置
 
-所有标签、工具说明和错误支持中英文，跟随 KiraAI 后端语言；未知语言回退英文。修改工具说明语言后重新加载插件。
-
-| 配置项 | 默认值 | 含义 |
+| 配置项 | 默认值 | 说明 |
 | --- | --- | --- |
-| default_adapter | 空 | 默认账户的配置实例名。 |
-| enable_like | true | 启用视频点赞/取消点赞工具。 |
-| enable_comment | true | 启用评论/回复工具。 |
-| enable_post | true | 启用动态发布工具。 |
-| request_timeout | 60 | 含排队时间的工具总超时，单位秒，范围5–180。 |
-| max_concurrency | 3 | 本插件并发操作数，范围1–16。 |
-| max_count | 20 | 浏览/搜索/投稿每页或首批评论数量上限，范围5–100，工具默认5条；投稿页另有插件上限30。 |
-| subtitle_max_chars | 12000 | 字幕预览字符预算，范围100–60000。 |
-| subtitle_max_bytes | 2097152 | 字幕下载字节上限，范围1024–10485760，SRT上限为其两倍。 |
+| `default_adapter` | 空 | 默认 B 站账户实例名。 |
+| `enable_like` | `true` | 允许点赞和取消点赞。 |
+| `enable_comment` | `true` | 允许发表评论和回复。 |
+| `enable_post` | `true` | 允许发布动态。 |
+| `request_timeout` | `60` | 单次工具调用的总超时秒数，范围5–180。 |
+| `max_concurrency` | `3` | 同时执行的操作数，范围1–16。 |
+| `max_count` | `20` | 浏览、搜索、投稿、评论和弹幕的返回数量上限，范围5–100；投稿每页最多30条。 |
+| `subtitle_max_chars` | `12000` | 每次字幕预览的字符上限。 |
+| `subtitle_max_bytes` | `2097152` | 字幕下载大小上限，单位字节。 |
 
-写入默认通过明确工具调用提供，可分别关闭。插件不接管入站评论自动回复，也不重复提供私信发送工具；现有默认评论插件和 IM/跨会话工具继续处理各自流程。
+界面和工具说明支持中英文，跟随后端语言；切换语言后重新加载插件。
 
-错误只返回安全的本地化信息，不输出原始SDK异常或凭据。写入超时/失败不自动重试，需要核实远端结果。卸载时仅取消并等待本插件的子任务，SDK共享会话由SDK管理，插件不会关闭它。
+写入操作使用所选账户的身份，并受 B 站权限、风控和审核限制。超时后请先核实结果再重试。插件不接管入站评论自动回复，私信继续使用现有 IM 工具。
 
-## 离线验证
+## 测试
 
-可选测试依赖见 `requirements-dev.txt`（pytest、pytest-asyncio、jsonschema），不属于运行依赖。在KiraAI仓库根目录的真实Python环境执行：
+在 KiraAI 仓库根目录的真实 Python 环境中运行：
 
 ```powershell
 python -m pytest data/plugins/kira-ai-plugin-bili-enhance/tests/ -q
 ```
 
-测试覆盖真实插件加载/注册、账户选择与实例替换、Feed映射、原生内容、字幕轨道与文件输出、请求边界、操作开关、国际化、异常脱敏和取消清理。外部调用均为mock。离线通过不代表已完成真实账户登录、字幕投递或平台写入验证。
+测试使用模拟外部接口，不代替真实账户验证。

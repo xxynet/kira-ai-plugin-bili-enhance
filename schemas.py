@@ -35,6 +35,9 @@ FIELDS = {
     "entry_offset": {"type": "integer", "minimum": 0},
     "max_entries": {"type": "integer", "minimum": 1, "maximum": 100},
     "order": {"type": "string", "enum": ["pubdate", "view", "favorite"]},
+    "num": {"type": "integer", "minimum": 1, "maximum": 6},
+    "at": {"type": "array", "items": {"type": "number", "minimum": 0}, "minItems": 1, "maxItems": 6},
+    "segment": {"type": "integer", "minimum": 1, "maximum": 10000},
     "liked": {"type": "boolean"},
     "include_replies": {"type": "boolean"},
     "target": {"type": "object", "properties": {
@@ -56,6 +59,8 @@ TOOLS = {
     "bili_search": (["adapter_name", "keyword", "kind", "count", "author_id", "cursor"], ["keyword"]),
     "bili_video_info": (["adapter_name", "video", "page"], ["video"]),
     "bili_video_subtitle": (["adapter_name", "video", "page", "language", "entry_offset", "max_entries"], ["video"]),
+    "bili_frames": (["adapter_name", "video", "page", "num", "at"], ["video"]),
+    "bili_danmaku": (["adapter_name", "video", "page", "segment", "count"], ["video"]),
     "bili_like_video": (["adapter_name", "video", "liked"], ["video", "liked"]),
     "bili_comment": (["adapter_name", "target", "content", "root", "parent"], ["target", "content"]),
     "bili_post": (["adapter_name", "content", "options"], ["content"]),
@@ -71,6 +76,8 @@ def tool_schema(name, lang="en"):
         properties["content"] = element_schema(mentions=True)
     for key, value in properties.items():
         value["description"] = PARAM_TEXTS[lang][key]
+    if name == "bili_danmaku":
+        properties["count"]["description"] = PARAM_TEXTS[lang]["danmaku_count"]
     if name == "bili_user_videos":
         properties["count"]["maximum"] = MAX_PAGE_SIZE
         properties["keyword"].pop("minLength")

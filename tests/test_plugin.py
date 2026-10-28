@@ -41,7 +41,7 @@ def modules(monkeypatch):
     package.__path__ = [str(ROOT)]
     monkeypatch.setitem(sys.modules, package_name, package)
     loaded = {}
-    for name in ("main", "accounts", "content", "feed", "video", "user_videos", "i18n", "schemas"):
+    for name in ("main", "accounts", "content", "feed", "video", "user_videos", "i18n", "schemas", "frames", "danmaku"):
         loaded[name] = importlib.import_module(package_name + "." + name)
     yield SimpleNamespace(**loaded)
     for name in list(sys.modules):
@@ -734,3 +734,365 @@ def test_user_upload_schema_has_distinct_page_and_keyword_semantics(modules):
         assert schema["properties"]["page"]["description"] == modules.i18n.PARAM_TEXTS[lang]["user_video_page"]
         with pytest.raises(jsonschema.ValidationError):
             jsonschema.validate({"author_id": "42", "count": 31}, schema)
+
+
+def storyboard_sheet(colors, width=8, height=6):
+    import io
+    from PIL import Image as PillowImage
+    sheet = PillowImage.new("RGB", (width * 2, height * 2))
+    for index, color in enumerate(colors):
+        sheet.paste(color, ((index % 2) * width, (index // 2) * height,
+                            (index % 2 + 1) * width, (index // 2 + 1) * height))
+    output = io.BytesIO()
+    sheet.save(output, format="PNG")
+    return output.getvalue()
+
+
+def storyboard_handle(modules, monkeypatch, snapshot=None):
+    handle = SimpleNamespace(
+        get_info=AsyncMock(return_value={"pages": [
+            {"cid": 100, "duration": 30}, {"cid": 200, "duration": 100},
+        ]}),
+        get_video_snapshot=AsyncMock(return_value=snapshot or {
+            "index": list(range(0, 80, 10)), "image": ["https://i0.hdslb.com/one", "https://i0.hdslb.com/two"],
+            "img_x_size": 8, "img_y_size": 6,
+        }),
+    )
+    monkeypatch.setattr(modules.video, "get_bilibili_client", Mock())
+    factory = Mock(return_value=handle)
+    monkeypatch.setattr(modules.video.sdk_video, "Video", factory)
+    return handle, factory
+
+
+@pytest.mark.asyncio
+async def test_frames_crop_multiple_sheets_use_part_and_deliver_native_media(modules, monkeypatch, tmp_path):
+    import io
+    from PIL import Image as PillowImage
+    from core.agent.agent_executor import AgentExecutor
+    from core.utils import media_refs
+    first, second = adapter(), adapter("second", "43")
+    handle, factory = storyboard_handle(modules, monkeypatch)
+    sheets = [storyboard_sheet(["red", "green", "blue", "yellow"]), storyboard_sheet(["purple", "white", "black", "orange"])]
+    downloader = AsyncMock(side_effect=lambda url, *args: sheets[0 if url.endswith("one") else 1])
+    monkeypatch.setattr(modules.frames, "download", downloader)
+    monkeypatch.setattr(media_refs, "get_data_path", lambda: tmp_path)
+    instance = await plugin(modules, {first.info.name: first, second.info.name: second})
+    instance.ctx.get_session_capabilities = AsyncMock(return_value={"image_recognition": {"mode": "native"}})
+    result = await instance.bili_frames(SimpleNamespace(sid="session"), video=f"https://www.bilibili.com/video/{BV}?p=2",
+                                        adapter_name="second", at=[0, 40, 60])
+    payload = unpack(result)
+    assert payload["adapter_name"] == "second" and factory.call_args.kwargs["credential"] is second.credential
+    assert payload["page"] == 2 and payload["covered_sec"] == 70
+    assert payload["image_attached"] and len(result.media_refs) == len(result.attachments) == 1
+    assert [item["got_sec"] for item in payload["frames"]] == [0, 40, 60]
+    handle.get_video_snapshot.assert_awaited_once_with(cid=200, json_index=True, pvideo=False)
+    assert downloader.await_count == 2
+    resolved = await media_refs.resolve_media_reference(result.media_refs[0])
+    assert resolved["image_url"]["url"].startswith("data:image/jpeg;base64,")
+    raw = await result.attachments[0].to_base64()
+    import base64
+    image = PillowImage.open(io.BytesIO(base64.b64decode(raw)))
+    assert image.size == (payload["width"], payload["height"])
+    assert payload["columns"] == 3 and payload["rows"] == 1
+    assert image.getpixel((88, 37))[0] > 220
+    assert image.getpixel((256, 37))[0] > 80 and image.getpixel((256, 37))[2] > 80
+    assert max(image.getpixel((424, 37))) < 30
+    assert all((tmp_path / ref["path"]).is_file() for ref in result.media_refs)
+    content = result.build_content(result.text)
+    messages = AgentExecutor._build_tool_messages([{"role": "tool", "name": "bili_frames", "tool_call_id": "frames", "content": content}])
+    assert messages[0].role == "tool" and messages[1].role == "user"
+    assert sum(part.get("type") == "kira_image_ref" for part in messages[1].content) == 1
+
+
+@pytest.mark.asyncio
+async def test_frames_even_sampling_and_vlm_descriptions(modules, monkeypatch):
+    account = adapter()
+    storyboard_handle(modules, monkeypatch)
+    monkeypatch.setattr(modules.frames, "download", AsyncMock(return_value=storyboard_sheet(["red"] * 4)))
+    describe = AsyncMock(return_value="A red frame")
+    monkeypatch.setattr(modules.frames, "desc_img", describe)
+    instance = await plugin(modules, {account.info.name: account})
+    instance.ctx.get_session_capabilities = AsyncMock(return_value={"image_recognition": {"mode": "vlm_description"}})
+    instance.ctx.provider_mgr = SimpleNamespace(get_default_vlm=Mock(return_value=object()))
+    result = await instance.bili_frames(SimpleNamespace(sid="session"), video=BV, page=2)
+    payload = unpack(result)
+    assert [item["want_sec"] for item in payload["frames"]] == [17.5, 35, 52.5]
+    assert [item["got_sec"] for item in payload["frames"]] == [20, 30, 50]
+    assert payload["image_described"] and not payload["image_attached"] and not result.media_refs
+    assert describe.await_count == 1
+    assert payload["description"] == "A red frame"
+    assert not any("description" in item for item in payload["frames"])
+    assert len(result.attachments) == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("recognition", [{"enabled": False, "mode": "native"}, {"mode": "vlm_description"}])
+async def test_frames_disabled_or_unavailable_vision_is_explicit(modules, monkeypatch, recognition):
+    account = adapter()
+    storyboard_handle(modules, monkeypatch)
+    monkeypatch.setattr(modules.frames, "download", AsyncMock(return_value=storyboard_sheet(["red"] * 4)))
+    instance = await plugin(modules, {account.info.name: account})
+    instance.ctx.get_session_capabilities = AsyncMock(return_value={"image_recognition": recognition})
+    result = await instance.bili_frames(SimpleNamespace(sid="session"), video=BV, num=1)
+    payload = unpack(result)
+    assert payload["ok"] and not payload["image_attached"] and payload["image_skip_reason"]
+    assert not result.media_refs and len(result.attachments) == 1
+
+
+@pytest.mark.asyncio
+async def test_frames_binary_index_fallback_and_millisecond_units(modules, monkeypatch):
+    import struct
+    account = adapter()
+    handle, _ = storyboard_handle(modules, monkeypatch, {
+        "pvdata": "https://i0.hdslb.com/index", "image": ["https://i0.hdslb.com/sheet"],
+        "img_x_size": 8, "img_y_size": 6,
+    })
+    downloader = AsyncMock(side_effect=lambda url, *args: struct.pack(">3H", 0, 30, 60) if url.endswith("index") else storyboard_sheet(["red"] * 4))
+    monkeypatch.setattr(modules.frames, "download", downloader)
+    payload, images = await modules.frames.read(modules.video.VideoService(), account, video=BV, page=2, at=[29])
+    assert payload["frames"][0]["got_sec"] == 30 and len(images) == 1
+    assert modules.frames.snapshot_entries({"index": [0, 30000, 60000]}, 100) == [(0, 0), (30, 1), (60, 2)]
+    assert modules.frames.snapshot_entries({"index": [0, 10000, 22163]}, 22163)[-1] == (22163, 2)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("arguments", [{"num": True}, {"num": 0}, {"num": 7}, {"at": []}, {"at": [-1]},
+    {"at": [float("nan")]}, {"at": [float("inf")]}, {"at": [True]}, {"at": "30"}, {"at": [1] * 7}])
+async def test_frames_invalid_arguments_fail_before_platform_request(modules, arguments):
+    account = adapter()
+    instance = await plugin(modules, {account.info.name: account})
+    instance.videos.part = AsyncMock()
+    assert unpack(await instance.bili_frames(video=BV, **arguments))["code"] == "invalid_input"
+    instance.videos.part.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_frames_empty_storyboard_out_of_coverage_partial_failure_and_redaction(modules, monkeypatch):
+    account = adapter()
+    handle, _ = storyboard_handle(modules, monkeypatch)
+    instance = await plugin(modules, {account.info.name: account})
+    assert unpack(await instance.bili_frames(video=BV, page=2, at=[90]))["code"] == "invalid_input"
+    handle.get_video_snapshot.return_value = {"image": [], "index": []}
+    assert unpack(await instance.bili_frames(video=BV))["code"] == "no_frames"
+    handle.get_video_snapshot.return_value = {"image": ["https://i0.hdslb.com/one"], "index": list(range(0, 80, 10)),
+                                             "img_x_size": 8, "img_y_size": 6}
+    monkeypatch.setattr(modules.frames, "download", AsyncMock(return_value=storyboard_sheet(["red"] * 4)))
+    payload, images = await modules.frames.read(instance.videos, account, video=BV, page=2, at=[0, 60])
+    assert len(images) == 1 and payload["failed"] == [{"index": 1, "code": "invalid_download"}]
+    handle.get_video_snapshot.side_effect = RuntimeError("sessdata=do-not-expose")
+    result = await instance.bili_frames(video=BV)
+    assert "do-not-expose" not in result and unpack(result)["code"] == "request_failed"
+
+
+@pytest.mark.asyncio
+async def test_storyboard_download_bounds_redirects_and_sends_no_credentials(modules, monkeypatch):
+    actual_client = httpx.AsyncClient
+    seen = []
+    def transport(request):
+        seen.append(request)
+        assert "cookie" not in request.headers and "authorization" not in request.headers
+        return httpx.Response(302, headers={"Location": "https://localhost/private"})
+    monkeypatch.setattr(modules.frames.httpx, "AsyncClient", lambda **kwargs: actual_client(transport=httpx.MockTransport(transport), **kwargs))
+    with pytest.raises(modules.i18n.PluginError, match="invalid_download"):
+        await modules.frames.download("http://i0.hdslb.com/sheet", 5)
+    assert len(seen) == 1 and seen[0].url.scheme == "https"
+    def large(request):
+        return httpx.Response(200, content=b"a" * 11)
+    monkeypatch.setattr(modules.frames.httpx, "AsyncClient", lambda **kwargs: actual_client(transport=httpx.MockTransport(large), **kwargs))
+    with pytest.raises(modules.i18n.PluginError, match="invalid_download"):
+        await modules.frames.download("https://i0.hdslb.com/sheet", 5, limit=10)
+    for url in ["https://localhost/a", "https://hdslb.com.evil.test/a", "https://user:pass@i0.hdslb.com/a", "https://i0.hdslb.com:444/a"]:
+        with pytest.raises(modules.i18n.PluginError):
+            modules.frames.image_url(url)
+    monkeypatch.setattr(modules.frames, "MAX_SHEET_PIXELS", 1)
+    with pytest.raises(modules.i18n.PluginError, match="invalid_download"):
+        modules.frames.crop_tile(storyboard_sheet(["red"] * 4), 0, 8, 6)
+
+
+@pytest.mark.asyncio
+async def test_danmaku_bounds_segment_sorts_caps_and_uses_selected_credential(modules, monkeypatch):
+    from bilibili_api.utils.danmaku import Danmaku
+    first, second = adapter(), adapter("second", "43")
+    handle, factory = storyboard_handle(modules, monkeypatch)
+    handle.get_info.return_value = {"pages": [{"cid": 100, "duration": 20}, {"cid": 200, "duration": 800}]}
+    handle.get_danmakus = AsyncMock(return_value=[
+        Danmaku("later", dm_time=370, id_=9007199254740993),
+        Danmaku("字" * 600, dm_time=361, id_=2), Danmaku("last", dm_time=390, id_=3),
+    ])
+    instance = await plugin(modules, {first.info.name: first, second.info.name: second})
+    result = unpack(await instance.bili_danmaku(video=f"https://www.bilibili.com/video/{BV}?p=2", adapter_name="second", segment=2, count=2))
+    handle.get_danmakus.assert_awaited_once_with(cid=200, from_seg=1, to_seg=1)
+    assert factory.call_args.kwargs["credential"] is second.credential
+    assert result["segment_count"] == 3 and result["next_segment"] == 3 and result["truncated"]
+    assert result["segment_start_sec"] == 360 and result["segment_end_sec"] == 720
+    assert result["items"][1]["id"] == "9007199254740993" and len(result["items"][0]["text"]) == 500
+    assert result["items"][0]["text_truncated"] and result["page"] == 2
+    handle.get_danmakus.return_value = []
+    result = unpack(await instance.bili_danmaku(video=BV, adapter_name="second", page=2, segment=3))
+    assert result["items"] == [] and result["next_segment"] is None and result["segment_end_sec"] == 800
+    assert unpack(await instance.bili_danmaku(video=BV, adapter_name="second", page=2, segment=4))["code"] == "invalid_input"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("arguments", [{"segment": 0}, {"segment": True}, {"segment": 10001}, {"count": True}, {"count": 0}, {"count": 21}])
+async def test_danmaku_invalid_input_does_not_call_platform(modules, arguments):
+    account = adapter()
+    instance = await plugin(modules, {account.info.name: account})
+    instance.videos.part = AsyncMock()
+    assert unpack(await instance.bili_danmaku(video=BV, **arguments))["code"] == "invalid_input"
+    instance.videos.part.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_danmaku_failures_are_redacted_and_timeout_does_not_retry(modules, monkeypatch):
+    account = adapter()
+    handle, _ = storyboard_handle(modules, monkeypatch)
+    handle.get_danmakus = AsyncMock(side_effect=RuntimeError("sessdata=private"))
+    instance = await plugin(modules, {account.info.name: account})
+    result = await instance.bili_danmaku(video=BV)
+    assert "private" not in result and unpack(result)["code"] == "request_failed"
+    handle.get_danmakus.side_effect = TimeoutError()
+    assert unpack(await instance.bili_danmaku(video=BV))["code"] == "timeout"
+    assert handle.get_danmakus.await_count == 2
+
+
+@pytest.mark.asyncio
+async def test_storyboard_chunked_limit_without_content_length(modules, monkeypatch):
+    class Stream(httpx.AsyncByteStream):
+        async def __aiter__(self):
+            yield b"a" * 8
+            yield b"b" * 8
+    actual_client = httpx.AsyncClient
+    transport = httpx.MockTransport(lambda request: httpx.Response(200, stream=Stream()))
+    monkeypatch.setattr(modules.frames.httpx, "AsyncClient", lambda **kwargs: actual_client(transport=transport, **kwargs))
+    with pytest.raises(modules.i18n.PluginError, match="invalid_download"):
+        await modules.frames.download("https://i0.hdslb.com/sheet", 5, limit=10)
+
+
+@pytest.mark.asyncio
+async def test_new_tools_cancel_owned_work_on_unload(modules, monkeypatch):
+    account = adapter()
+    handle, _ = storyboard_handle(modules, monkeypatch)
+    started = asyncio.Event()
+    cancelled = asyncio.Event()
+    async def waiting(**kwargs):
+        started.set()
+        try:
+            await asyncio.Event().wait()
+        finally:
+            cancelled.set()
+    handle.get_video_snapshot = waiting
+    instance = await plugin(modules, {account.info.name: account})
+    running = asyncio.create_task(instance.bili_frames(video=BV))
+    await started.wait()
+    await instance.terminate()
+    with pytest.raises(asyncio.CancelledError):
+        await running
+    assert cancelled.is_set() and not instance._pending
+
+
+@pytest.mark.asyncio
+async def test_danmaku_default_works_with_minimum_config_and_unknown_duration(modules, monkeypatch):
+    from bilibili_api.utils.danmaku import Danmaku
+    account = adapter()
+    handle, _ = storyboard_handle(modules, monkeypatch)
+    handle.get_info.return_value = {"pages": [{"cid": 100}]}
+    handle.get_danmakus = AsyncMock(return_value=[Danmaku(str(i), dm_time=i) for i in range(8)])
+    instance = await plugin(modules, {account.info.name: account}, max_count=5)
+    result = unpack(await instance.bili_danmaku(video=BV))
+    assert result["ok"] and len(result["items"]) == 5 and result["truncated"]
+    assert result["segment_count"] is None and result["next_segment"] is None
+    assert unpack(await instance.bili_danmaku(video=BV, count=6))["code"] == "invalid_input"
+
+
+def test_new_tool_schemas_validate_parameters_and_limits(modules):
+    import jsonschema
+    for name, valid in [("bili_frames", {"video": BV, "page": 2, "at": [0, 30.5]}),
+                        ("bili_danmaku", {"video": BV, "segment": 2, "count": 20})]:
+        jsonschema.validate(valid, modules.schemas.tool_schema(name)["params"])
+    for arguments in [{"num": 7}, {"at": [-1]}, {"at": []}, {"at": [1] * 7}, {"at": [True]}]:
+        with pytest.raises(jsonschema.ValidationError):
+            jsonschema.validate({"video": BV, **arguments}, modules.schemas.tool_schema("bili_frames")["params"])
+    for arguments in [{"segment": 0}, {"count": 101}]:
+        with pytest.raises(jsonschema.ValidationError):
+            jsonschema.validate({"video": BV, **arguments}, modules.schemas.tool_schema("bili_danmaku")["params"])
+
+
+@pytest.mark.parametrize("count", range(1, 7))
+def test_frame_collage_layout_preserves_order_and_actual_time_labels(modules, monkeypatch, count):
+    import io
+    from PIL import Image as PillowImage
+    colors = ["red", "green", "blue", "yellow", "purple", "white"][:count]
+    tiles = []
+    for color in colors:
+        with PillowImage.new("RGB", (80, 40), color) as tile:
+            output = io.BytesIO()
+            tile.save(output, format="PNG")
+            tiles.append(output.getvalue())
+    frames = [{"index": i, "want_sec": i * 20, "got_sec": i * 20 + 0.125} for i in range(count)]
+    labels = []
+    original_draw = modules.frames.ImageDraw.Draw
+    def track_draw(image):
+        draw = original_draw(image)
+        original_text = draw.text
+        def text(position, label, **kwargs):
+            labels.append(label)
+            return original_text(position, label, **kwargs)
+        draw.text = text
+        return draw
+    monkeypatch.setattr(modules.frames.ImageDraw, "Draw", track_draw)
+    raw, width, height, columns, rows = modules.frames.compose_frames(frames, tiles, 80, 40)
+    assert columns == min(3, count) and rows == (count + columns - 1) // columns
+    assert labels == [f"#{i + 1} {i * 20 + 0.125:.3f}s" for i in range(count)]
+    with PillowImage.open(io.BytesIO(raw)) as collage:
+        assert collage.format == "JPEG" and collage.size == (width, height)
+        from PIL import ImageColor
+        for i, color in enumerate(colors):
+            x, y = 88 + i % columns * 168, 54 + i // columns * 74
+            expected = ImageColor.getrgb(color)
+            actual = collage.getpixel((x, y))
+            assert max(abs(a - b) for a, b in zip(actual, expected)) < 10
+        assert collage.crop((8, 8, 168, 34)).getextrema()[0][1] > 180
+
+
+def test_frame_collage_limits_large_tiles_and_keeps_failed_frame_number_gaps(modules, monkeypatch):
+    import io
+    from PIL import Image as PillowImage
+    with PillowImage.new("RGB", (2048, 1024), "red") as tile:
+        output = io.BytesIO()
+        tile.save(output, format="PNG")
+    frames = [{"index": i, "got_sec": i * 30} for i in [0, 2, 3, 4, 5]]
+    labels = []
+    original_draw = modules.frames.ImageDraw.Draw
+    def track_draw(image):
+        draw = original_draw(image)
+        original_text = draw.text
+        def text(position, label, **kwargs):
+            labels.append(label)
+            return original_text(position, label, **kwargs)
+        draw.text = text
+        return draw
+    monkeypatch.setattr(modules.frames.ImageDraw, "Draw", track_draw)
+    raw, width, height, columns, rows = modules.frames.compose_frames(frames, [output.getvalue()] * 5, 2048, 1024)
+    assert (columns, rows) == (3, 2) and width < 2000 and height < 1400
+    assert width * height < modules.frames.MAX_SHEET_PIXELS
+    assert labels[1] == "#3 60.000s"
+    with PillowImage.open(io.BytesIO(raw)) as collage:
+        assert collage.size == (width, height)
+
+
+@pytest.mark.asyncio
+async def test_frame_collage_vlm_description_is_bounded_and_processed_once(modules, monkeypatch):
+    account = adapter()
+    storyboard_handle(modules, monkeypatch)
+    monkeypatch.setattr(modules.frames, "download", AsyncMock(return_value=storyboard_sheet(["red"] * 4)))
+    describe = AsyncMock(return_value="x" * 7000)
+    monkeypatch.setattr(modules.frames, "desc_img", describe)
+    instance = await plugin(modules, {account.info.name: account})
+    instance.ctx.get_session_capabilities = AsyncMock(return_value={"image_recognition": {"mode": "vlm_description"}})
+    instance.ctx.provider_mgr = SimpleNamespace(get_default_vlm=Mock(return_value=object()))
+    result = await instance.bili_frames(SimpleNamespace(sid="session"), video=BV, page=2, num=6)
+    assert len(result.attachments) == 1 and len(unpack(result)["frames"]) == 6
+    assert len(unpack(result)["description"]) == 6000
+    describe.assert_awaited_once()
+    assert describe.await_args.kwargs["image"] is result.attachments[0]

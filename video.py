@@ -190,6 +190,16 @@ class VideoService:
                       for index, item in enumerate(pages[:100], 1)],
         }
 
+    async def part(self, adapter, value, page=None):
+        handle, bvid, url_page = await self.handle(adapter, value)
+        info = await handle.get_info()
+        pages = await self.pages(handle, info)
+        page = integer(url_page if page is None else page, "page", maximum=len(pages))
+        selected = pages[page - 1]
+        if not selected.get("cid"):
+            invalid("page")
+        return handle, bvid, page, selected
+
     async def like(self, adapter, *, video, liked):
         if type(liked) is not bool:
             invalid("liked")
