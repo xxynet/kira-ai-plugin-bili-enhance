@@ -6,7 +6,7 @@ import json
 from core.agent.tool import ToolResult
 from core.plugin import BasePlugin, register
 
-from . import accounts, feed, user_videos
+from . import accounts, danmaku, feed, frames, user_videos
 from .i18n import PluginError, language, tr
 from .schemas import TOOLS, tool_schema
 from .video import VideoService
@@ -94,6 +94,10 @@ class BiliEnhancePlugin(BasePlugin):
                 adapter = accounts.select(self.ctx, event, adapter_name, self.settings["default_adapter"]) if account else None
                 payload = await operation(adapter)
                 attachments = []
+                media_refs = []
+                if isinstance(payload, ToolResult):
+                    attachments, media_refs = payload.attachments, payload.media_refs
+                    payload = json.loads(payload.text)
                 if isinstance(payload, tuple):
                     payload, attachments = payload
                 result = {"ok": True, **payload}
@@ -102,7 +106,7 @@ class BiliEnhancePlugin(BasePlugin):
                 if action:
                     result["message"] = tr(self.ctx.get_lang(), "write_ready")
                 serialized = json.dumps(result, ensure_ascii=False)
-                return ToolResult(text=serialized, attachments=attachments) if attachments else serialized
+                return ToolResult(text=serialized, attachments=attachments, media_refs=media_refs) if attachments or media_refs else serialized
 
         # Track an owned child task rather than cancelling the caller's message-processing task.
         task = asyncio.create_task(run())
@@ -156,6 +160,21 @@ class BiliEnhancePlugin(BasePlugin):
                 adapter, video=video, page=page, language=language, entry_offset=entry_offset, max_entries=max_entries,
             )
             return {**result, "note": tr(self.ctx.get_lang(), "subtitle_ready")}, attachments
+        return await self._execute(event, adapter_name, operation)
+
+    @register.tool(**tool_schema("bili_frames"))
+    async def bili_frames(self, event=None, *, video, adapter_name=None, page=None, num=3, at=None):
+        async def operation(adapter):
+            payload, images = await frames.read(self.videos, adapter, video=video, page=page, num=num, at=at)
+            return await frames.present(self.ctx, event, payload, images)
+        return await self._execute(event, adapter_name, operation)
+
+    @register.tool(**tool_schema("bili_danmaku"))
+    async def bili_danmaku(self, event=None, *, video, adapter_name=None, page=None, segment=1, count=5):
+        async def operation(adapter):
+            payload = await danmaku.read(self.videos, adapter, video=video, page=page, segment=segment,
+                                         count=count, max_count=self.settings["max_count"])
+            return {**payload, "note": tr(self.ctx.get_lang(), "danmaku_note")}
         return await self._execute(event, adapter_name, operation)
 
     @register.tool(**tool_schema("bili_like_video"))
