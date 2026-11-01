@@ -7,6 +7,7 @@ from core.agent.tool import ToolResult
 from core.plugin import BasePlugin, register
 
 from . import accounts, danmaku, feed, frames, user_videos
+from .errors import report_error
 from .i18n import PluginError, language, tr
 from .schemas import TOOLS, tool_schema
 from .video import VideoService
@@ -78,8 +79,14 @@ class BiliEnhancePlugin(BasePlugin):
             self._shutdown_task = asyncio.create_task(self._drain())
         await asyncio.shield(self._shutdown_task)
 
-    def _failure(self, code, **values):
-        return json.dumps({"ok": False, "code": code, "message": tr(self.ctx.get_lang(), code, **values)}, ensure_ascii=False)
+    def _failure(self, code, *, error=None, **values):
+        result = {"ok": False, "code": code, "message": tr(self.ctx.get_lang(), code, **values)}
+        if error is not None:
+            result["error"] = report_error(error, f"BiliBili Enhance: {code}")
+            if not isinstance(error, PluginError):
+                for detail in [result["error"], *result["error"].get("chain", [])]:
+                    result["message"] += f"\n{detail['type']}: {detail['message']}"
+        return json.dumps(result, ensure_ascii=False)
 
     async def _execute(self, event, adapter_name, operation, *, action=None, account=True):
         if self._closing:
@@ -115,14 +122,13 @@ class BiliEnhancePlugin(BasePlugin):
         try:
             return await asyncio.wait_for(task, timeout=self.settings["request_timeout"])
         except PluginError as exc:
-            return self._failure(exc.code, **exc.values)
-        except (asyncio.TimeoutError, TimeoutError):
-            return self._failure("write_timeout" if action else "timeout")
+            return self._failure(exc.code, error=exc, **exc.values)
+        except (asyncio.TimeoutError, TimeoutError) as exc:
+            return self._failure("write_timeout" if action else "timeout", error=exc)
         except asyncio.CancelledError:
             raise
-        except Exception:
-            # SDK exceptions can contain credentials or private response bodies.
-            return self._failure("write_failed" if action else "request_failed")
+        except Exception as exc:
+            return self._failure("write_failed" if action else "request_failed", error=exc)
         finally:
             self._pending.discard(task)
 

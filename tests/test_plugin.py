@@ -41,7 +41,7 @@ def modules(monkeypatch):
     package.__path__ = [str(ROOT)]
     monkeypatch.setitem(sys.modules, package_name, package)
     loaded = {}
-    for name in ("main", "accounts", "content", "feed", "video", "user_videos", "i18n", "schemas", "frames", "danmaku"):
+    for name in ("main", "accounts", "content", "feed", "video", "user_videos", "i18n", "schemas", "frames", "danmaku", "errors"):
         loaded[name] = importlib.import_module(package_name + "." + name)
     yield SimpleNamespace(**loaded)
     for name in list(sys.modules):
@@ -205,12 +205,12 @@ async def test_invalid_config_is_rejected(modules, cfg):
 
 
 @pytest.mark.asyncio
-async def test_exception_redaction_and_write_timeout_are_not_retried(modules):
+async def test_exception_details_and_write_timeout_are_not_retried(modules):
     account = adapter()
     instance = await plugin(modules, {account.info.name: account})
     failing = AsyncMock(side_effect=RuntimeError("sessdata=secret-test-value"))
     result = await instance._execute(None, None, failing)
-    assert "secret-test-value" not in result and unpack(result)["code"] == "request_failed"
+    assert "secret-test-value" in result and unpack(result)["code"] == "request_failed"
     timeout = AsyncMock(side_effect=TimeoutError())
     assert unpack(await instance._execute(None, None, timeout, action="post"))["code"] == "write_timeout"
     assert timeout.await_count == 1
@@ -621,13 +621,13 @@ async def test_bad_comment_read_input_does_not_call_client(modules, kwargs):
 
 
 @pytest.mark.asyncio
-async def test_comment_read_client_error_is_redacted(modules):
+async def test_comment_read_client_error_is_preserved(modules):
     account = adapter()
     client = account.get_client()
     client.get_comments_lazy = AsyncMock(side_effect=RuntimeError("sessdata=private-test-value"))
     instance = await plugin(modules, {account.info.name: account})
     result = await instance.bili_comments(target={"resource_type": "video", "id": BV})
-    assert unpack(result)["code"] == "request_failed" and "private-test-value" not in result
+    assert unpack(result)["code"] == "request_failed" and "private-test-value" in result
 
 
 @pytest.mark.asyncio
@@ -711,7 +711,7 @@ async def test_invalid_user_upload_parameters_do_not_call_sdk(modules, monkeypat
 
 
 @pytest.mark.asyncio
-async def test_user_upload_unknown_total_and_sdk_failure_redaction(modules, monkeypatch):
+async def test_user_upload_unknown_total_and_sdk_failure_details(modules, monkeypatch):
     account = adapter()
     handle = SimpleNamespace(get_videos=AsyncMock(return_value={"list": {"vlist": []}}))
     monkeypatch.setattr(modules.user_videos.sdk_user, "User", Mock(return_value=handle))
@@ -721,7 +721,7 @@ async def test_user_upload_unknown_total_and_sdk_failure_redaction(modules, monk
     assert result["ok"] and result["total"] is None and result["has_more"] is None
     handle.get_videos.side_effect = RuntimeError("SESSDATA=private-sdk-exception")
     raw = await instance.bili_user_videos(author_id="42")
-    assert unpack(raw)["code"] == "request_failed" and "private-sdk-exception" not in raw
+    assert unpack(raw)["code"] == "request_failed" and "private-sdk-exception" in raw
 
 
 def test_user_upload_schema_has_distinct_page_and_keyword_semantics(modules):
@@ -867,7 +867,7 @@ async def test_frames_invalid_arguments_fail_before_platform_request(modules, ar
 
 
 @pytest.mark.asyncio
-async def test_frames_empty_storyboard_out_of_coverage_partial_failure_and_redaction(modules, monkeypatch):
+async def test_frames_empty_storyboard_out_of_coverage_partial_failure_and_details(modules, monkeypatch):
     account = adapter()
     handle, _ = storyboard_handle(modules, monkeypatch)
     instance = await plugin(modules, {account.info.name: account})
@@ -878,10 +878,17 @@ async def test_frames_empty_storyboard_out_of_coverage_partial_failure_and_redac
                                              "img_x_size": 8, "img_y_size": 6}
     monkeypatch.setattr(modules.frames, "download", AsyncMock(return_value=storyboard_sheet(["red"] * 4)))
     payload, images = await modules.frames.read(instance.videos, account, video=BV, page=2, at=[0, 60])
-    assert len(images) == 1 and payload["failed"] == [{"index": 1, "code": "invalid_download"}]
+    assert len(images) == 1 and len(payload["failed"]) == 1
+    assert payload["failed"][0]["index"] == 1
+    assert payload["failed"][0]["error"]["type"] == "PluginError"
+    assert "traceback" not in payload["failed"][0]["error"]
+    all_failed = unpack(await instance.bili_frames(video=BV, page=2, at=[60]))
+    assert all_failed["code"] == "no_frames"
+    failures = all_failed["error"]["attributes"]["values"]["failures"]
+    assert failures and all("traceback" not in item["error"] for item in failures)
     handle.get_video_snapshot.side_effect = RuntimeError("sessdata=do-not-expose")
     result = await instance.bili_frames(video=BV)
-    assert "do-not-expose" not in result and unpack(result)["code"] == "request_failed"
+    assert "do-not-expose" in result and unpack(result)["code"] == "request_failed"
 
 
 @pytest.mark.asyncio
@@ -944,13 +951,13 @@ async def test_danmaku_invalid_input_does_not_call_platform(modules, arguments):
 
 
 @pytest.mark.asyncio
-async def test_danmaku_failures_are_redacted_and_timeout_does_not_retry(modules, monkeypatch):
+async def test_danmaku_failures_are_preserved_and_timeout_does_not_retry(modules, monkeypatch):
     account = adapter()
     handle, _ = storyboard_handle(modules, monkeypatch)
     handle.get_danmakus = AsyncMock(side_effect=RuntimeError("sessdata=private"))
     instance = await plugin(modules, {account.info.name: account})
     result = await instance.bili_danmaku(video=BV)
-    assert "private" not in result and unpack(result)["code"] == "request_failed"
+    assert "private" in result and unpack(result)["code"] == "request_failed"
     handle.get_danmakus.side_effect = TimeoutError()
     assert unpack(await instance.bili_danmaku(video=BV))["code"] == "timeout"
     assert handle.get_danmakus.await_count == 2
@@ -1096,3 +1103,100 @@ async def test_frame_collage_vlm_description_is_bounded_and_processed_once(modul
     assert len(unpack(result)["description"]) == 6000
     describe.assert_awaited_once()
     assert describe.await_args.kwargs["image"] is result.attachments[0]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("lang", ["zh", "en"])
+async def test_comment_sdk_error_reaches_tool_and_logs_without_truncation(modules, monkeypatch, lang):
+    from bilibili_api.exceptions import ResponseCodeException
+
+    account = adapter()
+    instance = await plugin(modules, {account.info.name: account})
+    instance.ctx.get_lang = lambda: lang
+    client_module = importlib.import_module("core.adapter.src.bilibili.client")
+    raw = {"code": 12051, "data": {"reason": "diagnostic-response-" + "x" * 7000}}
+    error = ResponseCodeException(12051, "comment rejected", raw)
+    send = AsyncMock(side_effect=error)
+    monkeypatch.setattr(client_module, "get_bilibili_client", Mock())
+    monkeypatch.setattr(client_module.comment, "send_comment", send)
+    log = Mock()
+    monkeypatch.setattr(modules.errors, "logger", log)
+    result = unpack(await instance.bili_comment(
+        target={"resource_type": "video", "id": BV}, content=[{"type": "text", "text": "hi"}],
+    ))
+    assert not result["ok"] and result["code"] == "write_failed"
+    assert str(error) in result["message"]
+    details = [result["error"], *result["error"].get("chain", [])]
+    original = next(detail for detail in details if detail["type"] == "ResponseCodeException")
+    assert original["message"] == str(error)
+    assert original["attributes"] == vars(error)
+    assert original["attributes"]["raw"] == raw
+    assert all("traceback" not in detail for detail in details)
+    logged = json.loads(log.error.call_args.args[2])
+    assert "send_comment" in logged["traceback"]
+    logged_original = next(detail for detail in [logged, *logged.get("chain", [])]
+                           if detail["type"] == "ResponseCodeException")
+    assert logged_original["attributes"] == original["attributes"]
+    send.assert_awaited_once()
+    assert not instance._pending
+
+
+@pytest.mark.asyncio
+async def test_nested_errors_keep_tracebacks_only_in_logs(modules, monkeypatch):
+    instance = await plugin(modules, {}, default_adapter="")
+    log = Mock()
+    monkeypatch.setattr(modules.errors, "logger", log)
+
+    async def operation(_):
+        try:
+            error = ValueError("original diagnostic")
+            error.response = {"code": -1, "reason": "original response"}
+            raise error
+        except ValueError:
+            raise RuntimeError("outer diagnostic") from None
+
+    result = unpack(await instance._execute(None, None, operation, account=False))
+    error = result["error"]
+    assert error["type"] == "RuntimeError" and error["message"] == "outer diagnostic"
+    assert error["chain"][0]["attributes"]["response"] == {"code": -1, "reason": "original response"}
+    assert "traceback" not in error and all("traceback" not in cause for cause in error["chain"])
+    logged = json.loads(log.error.call_args.args[2])
+    assert "original diagnostic" in logged["traceback"] and "outer diagnostic" in logged["traceback"]
+    assert "original diagnostic" in logged["chain"][0]["traceback"]
+    assert "original diagnostic" in result["message"] and "outer diagnostic" in result["message"]
+
+
+@pytest.mark.asyncio
+async def test_sdk_timeout_retains_reason_and_cause_without_retry(modules, monkeypatch):
+    account = adapter()
+    instance = await plugin(modules, {account.info.name: account})
+    monkeypatch.setattr(modules.errors, "logger", Mock())
+    client_module = importlib.import_module("core.adapter.src.bilibili.client")
+    monkeypatch.setattr(client_module, "get_bilibili_client", Mock())
+    send = AsyncMock(side_effect=asyncio.TimeoutError("original upload timeout"))
+    monkeypatch.setattr(client_module.comment, "send_comment", send)
+    result = unpack(await instance.bili_comment(
+        target={"resource_type": "video", "id": BV}, content=[{"type": "text", "text": "hi"}],
+    ))
+    assert result["code"] == "write_timeout"
+    assert "original upload timeout" in result["message"]
+    assert result["error"]["chain"][0]["message"] == "original upload timeout"
+    assert "traceback" not in result["error"]
+    assert all("traceback" not in cause for cause in result["error"]["chain"])
+    send.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_frame_description_failure_retains_diagnostics(modules, monkeypatch):
+    account = adapter()
+    storyboard_handle(modules, monkeypatch)
+    monkeypatch.setattr(modules.frames, "download", AsyncMock(return_value=storyboard_sheet(["red"] * 4)))
+    monkeypatch.setattr(modules.frames, "desc_img", AsyncMock(side_effect=RuntimeError("vision diagnostic")))
+    monkeypatch.setattr(modules.errors, "logger", Mock())
+    instance = await plugin(modules, {account.info.name: account})
+    instance.ctx.get_session_capabilities = AsyncMock(return_value={"image_recognition": {"mode": "vlm_description"}})
+    instance.ctx.provider_mgr = SimpleNamespace(get_default_vlm=Mock(return_value=object()))
+    result = unpack(await instance.bili_frames(SimpleNamespace(sid="session"), video=BV, num=1))
+    assert result["ok"] and not result["image_described"]
+    assert result["description_error"]["message"] == "vision diagnostic"
+    assert "traceback" not in result["description_error"]

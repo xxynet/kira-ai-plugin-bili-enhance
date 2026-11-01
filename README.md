@@ -64,6 +64,8 @@ The interface and tool descriptions support English and Chinese, following the b
 
 Write operations use the selected account and remain subject to Bilibili permissions, restrictions and moderation. Check the outcome before retrying a timed-out write. Automatic incoming comment replies remain with existing handlers; use existing IM tools for private messages.
 
+Failed tools retain `ok`, `code` and the localized `message`, and add `error` with the original exception type, message, attributes (including SDK error codes and raw responses) and exception chain. Python tracebacks, including those in nested error chains, are kept only in project logs and are omitted from tool/model context. Logs retain the full diagnostics. Partial frame failures and image-description failures include their diagnostics in the result. These diagnostics are not redacted or truncated and may contain credentials or private response data; they are visible in tool/model context and logs. Older clients that replace exceptions with generic errors are supported by recovering the retained exception context, including suppressed context. Information already discarded by a client cannot be reconstructed. Reload the plugin to activate this change; separately installed built-in adapter updates require restarting KiraAI.
+
 ## Tests
 
 Run from the KiraAI repository root in the real Python environment:
