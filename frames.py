@@ -19,6 +19,7 @@ from core.utils.common_utils import desc_img
 from core.utils.media_refs import store_session_media
 
 from .content import integer, invalid
+from .errors import report_error
 from .i18n import PluginError, tr
 
 MAX_FRAMES = 6
@@ -174,10 +175,13 @@ async def read(videos, adapter, *, video, page=None, num=3, at=None):
             frames.append({"index": index, "want_sec": round(target, 3), "got_sec": round(actual, 3)})
         except (asyncio.TimeoutError, TimeoutError):
             raise
-        except Exception:
-            failed.append({"index": index, "code": "invalid_download"})
+        except Exception as exc:
+            failed.append({
+                "index": index, "code": "invalid_download",
+                "error": report_error(exc, f"BiliBili Enhance: frame {index}"),
+            })
     if not tiles:
-        raise PluginError("no_frames")
+        raise PluginError("no_frames", failures=failed)
     raw, image_width, image_height, columns, rows = await asyncio.to_thread(compose_frames, frames, tiles, width, height)
     image = Image(image=base64.b64encode(raw).decode("ascii"), mime="image/jpeg", name=f"{bvid}_p{page}_frames.jpg")
     return {
@@ -206,7 +210,8 @@ async def present(ctx, event, payload, images):
                                          prompt=recognition.get("desc_prompt") or None, lang=ctx.get_lang())
         except (asyncio.TimeoutError, TimeoutError):
             raise
-        except Exception:
+        except Exception as exc:
+            payload["description_error"] = report_error(exc, "BiliBili Enhance: frame description")
             description = ""
         payload["description"] = str(description or "")[:6000]
         payload["image_described"] = bool(payload["description"])
