@@ -881,6 +881,11 @@ async def test_frames_empty_storyboard_out_of_coverage_partial_failure_and_detai
     assert len(images) == 1 and len(payload["failed"]) == 1
     assert payload["failed"][0]["index"] == 1
     assert payload["failed"][0]["error"]["type"] == "PluginError"
+    assert "traceback" not in payload["failed"][0]["error"]
+    all_failed = unpack(await instance.bili_frames(video=BV, page=2, at=[60]))
+    assert all_failed["code"] == "no_frames"
+    failures = all_failed["error"]["attributes"]["values"]["failures"]
+    assert failures and all("traceback" not in item["error"] for item in failures)
     handle.get_video_snapshot.side_effect = RuntimeError("sessdata=do-not-expose")
     result = await instance.bili_frames(video=BV)
     assert "do-not-expose" in result and unpack(result)["code"] == "request_failed"
@@ -1126,16 +1131,21 @@ async def test_comment_sdk_error_reaches_tool_and_logs_without_truncation(module
     assert original["message"] == str(error)
     assert original["attributes"] == vars(error)
     assert original["attributes"]["raw"] == raw
-    assert "send_comment" in result["error"]["traceback"]
-    assert json.loads(log.error.call_args.args[2]) == result["error"]
+    assert all("traceback" not in detail for detail in details)
+    logged = json.loads(log.error.call_args.args[2])
+    assert "send_comment" in logged["traceback"]
+    logged_original = next(detail for detail in [logged, *logged.get("chain", [])]
+                           if detail["type"] == "ResponseCodeException")
+    assert logged_original["attributes"] == original["attributes"]
     send.assert_awaited_once()
     assert not instance._pending
 
 
 @pytest.mark.asyncio
-async def test_nested_errors_retain_original_attributes_and_traceback(modules, monkeypatch):
+async def test_nested_errors_keep_tracebacks_only_in_logs(modules, monkeypatch):
     instance = await plugin(modules, {}, default_adapter="")
-    monkeypatch.setattr(modules.errors, "logger", Mock())
+    log = Mock()
+    monkeypatch.setattr(modules.errors, "logger", log)
 
     async def operation(_):
         try:
@@ -1149,7 +1159,10 @@ async def test_nested_errors_retain_original_attributes_and_traceback(modules, m
     error = result["error"]
     assert error["type"] == "RuntimeError" and error["message"] == "outer diagnostic"
     assert error["chain"][0]["attributes"]["response"] == {"code": -1, "reason": "original response"}
-    assert "original diagnostic" in error["traceback"] and "outer diagnostic" in error["traceback"]
+    assert "traceback" not in error and all("traceback" not in cause for cause in error["chain"])
+    logged = json.loads(log.error.call_args.args[2])
+    assert "original diagnostic" in logged["traceback"] and "outer diagnostic" in logged["traceback"]
+    assert "original diagnostic" in logged["chain"][0]["traceback"]
     assert "original diagnostic" in result["message"] and "outer diagnostic" in result["message"]
 
 
@@ -1168,6 +1181,8 @@ async def test_sdk_timeout_retains_reason_and_cause_without_retry(modules, monke
     assert result["code"] == "write_timeout"
     assert "original upload timeout" in result["message"]
     assert result["error"]["chain"][0]["message"] == "original upload timeout"
+    assert "traceback" not in result["error"]
+    assert all("traceback" not in cause for cause in result["error"]["chain"])
     send.assert_awaited_once()
 
 
@@ -1184,4 +1199,4 @@ async def test_frame_description_failure_retains_diagnostics(modules, monkeypatc
     result = unpack(await instance.bili_frames(SimpleNamespace(sid="session"), video=BV, num=1))
     assert result["ok"] and not result["image_described"]
     assert result["description_error"]["message"] == "vision diagnostic"
-    assert "desc_img" in result["description_error"]["traceback"]
+    assert "traceback" not in result["description_error"]

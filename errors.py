@@ -1,4 +1,4 @@
-"""Preserve complete Bilibili tool exceptions in results and project logs."""
+"""Return original Bilibili errors while keeping Python tracebacks in project logs."""
 
 import json
 import traceback
@@ -28,4 +28,6 @@ def report_error(exc, context):
     serialized = json.dumps(details, ensure_ascii=False, default=str)
     details = json.loads(serialized)
     logger.error("%s\n%s", context, json.dumps(details, ensure_ascii=False, indent=2))
+    for error in [details, *details.get("chain", [])]:
+        error.pop("traceback", None)
     return details
