@@ -38,7 +38,7 @@ Ask the AI in natural language, for example:
 - "Read the subtitles for part 2 of this video."
 - "Look at the frames around 30 and 60 seconds, then read some danmaku."
 
-Video tools accept BV IDs, Bilibili video URLs and b23.tv short links. Use `page` to select a part; otherwise the URL's part or part 1 is used.
+Video tools accept BV IDs, Bilibili video URLs and b23.tv and bili2233.cn short links. Use `page` to select a part; otherwise the URL's part or part 1 is used.
 
 For frames, use `num` to choose the count or `at` to specify timestamps in seconds. Frames are returned in one combined image with actual timestamps; the previews may miss small text or brief actions. Enable session image recognition and configure a vision-capable model or VLM for the AI to view frames.
 
