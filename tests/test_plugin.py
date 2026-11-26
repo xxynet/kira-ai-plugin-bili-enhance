@@ -265,7 +265,8 @@ async def test_cancelling_shutdown_waiter_does_not_cancel_cleanup(modules):
 
 
 @pytest.mark.asyncio
-async def test_video_details_and_likes_use_selected_account(modules, monkeypatch):
+@pytest.mark.parametrize("short_link", [False, True])
+async def test_video_details_and_likes_use_selected_account(modules, monkeypatch, short_link):
     account = adapter(sessdata="test-session", bili_jct="test-jct")
     handle = SimpleNamespace(get_info=AsyncMock(return_value={"aid": 1, "title": "Video", "pages": [
         {"cid": 100, "part": "one"}, {"cid": 200, "part": "two"},
@@ -274,7 +275,13 @@ async def test_video_details_and_likes_use_selected_account(modules, monkeypatch
     monkeypatch.setattr(modules.video, "get_bilibili_client", Mock())
     monkeypatch.setattr(modules.video.sdk_video, "Video", factory)
     instance = await plugin(modules, {account.info.name: account})
-    result = unpack(await instance.bili_video_info(video=f"https://www.bilibili.com/video/{BV}?p=2"))
+    video_url = f"https://www.bilibili.com/video/{BV}?p=2"
+    if short_link:
+        mock_short_link_redirect(modules, monkeypatch, video_url)
+        video_url = "https://bili2233.cn/example"
+    result = unpack(await instance.bili_video_info(video=video_url))
+    assert result["bvid"] == BV
+    assert factory.call_args.kwargs["bvid"] == BV
     assert result["page"] == 2 and result["part"] == "two"
     assert factory.call_args.kwargs["credential"] is account.credential
     assert unpack(await instance.bili_like_video(video=BV, liked=False))["liked"] is False
@@ -282,29 +289,61 @@ async def test_video_details_and_likes_use_selected_account(modules, monkeypatch
     assert unpack(await instance.bili_like_video(video=BV, liked=1))["code"] == "invalid_input"
 
 
-@pytest.mark.asyncio
-async def test_short_link_is_bounded_and_rejects_foreign_redirects(modules, monkeypatch):
+def mock_short_link_redirect(modules, monkeypatch, location):
     actual_client = httpx.AsyncClient
+
+    def redirect(request):
+        assert request.method == "HEAD"
+        assert str(request.url) == "https://bili2233.cn/example"
+        return httpx.Response(302, headers={"Location": location})
+
+    monkeypatch.setattr(
+        modules.video.httpx, "AsyncClient",
+        lambda **kwargs: actual_client(transport=httpx.MockTransport(redirect), **kwargs),
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("host", ["b23.tv", "bili2233.cn"])
+async def test_short_link_is_bounded_and_rejects_foreign_redirects(modules, monkeypatch, host):
+    actual_client = httpx.AsyncClient
+    short_url = f"https://{host}/example"
     requests = []
+
     def transport(request):
         requests.append(str(request.url))
         return httpx.Response(302, headers={"Location": f"https://www.bilibili.com/video/{BV}?p=2"})
+
     monkeypatch.setattr(modules.video.httpx, "AsyncClient", lambda **kwargs: actual_client(transport=httpx.MockTransport(transport), **kwargs))
-    assert await modules.video.resolve_video("https://b23.tv/example", 5) == (BV, 2)
-    assert len(requests) == 1
+    assert await modules.video.resolve_video(short_url, 5) == (BV, 2)
+    assert requests == [short_url]
+
     def bad_transport(request):
+        assert str(request.url) == short_url
         return httpx.Response(302, headers={"Location": "https://example.com/video/" + BV})
+
     monkeypatch.setattr(modules.video.httpx, "AsyncClient", lambda **kwargs: actual_client(transport=httpx.MockTransport(bad_transport), **kwargs))
     with pytest.raises(modules.i18n.PluginError, match="invalid_video"):
-        await modules.video.resolve_video("https://b23.tv/example", 5)
+        await modules.video.resolve_video(short_url, 5)
+
     def looping(request):
         return httpx.Response(302, headers={"Location": str(request.url)})
+
     monkeypatch.setattr(modules.video.httpx, "AsyncClient", lambda **kwargs: actual_client(transport=httpx.MockTransport(looping), **kwargs))
     with pytest.raises(modules.i18n.PluginError, match="invalid_video"):
-        await modules.video.resolve_video("https://b23.tv/example", 5)
+        await modules.video.resolve_video(short_url, 5)
 
 
-@pytest.mark.parametrize("value", ["https://example.com/video/" + BV, "https://user:pass@www.bilibili.com/video/" + BV, "http://b23.tv/example", "https://b23.tv:444/example", "https://b23.tv.evil.test/example"])
+@pytest.mark.parametrize("value", [
+    "https://example.com/video/" + BV,
+    "https://user:pass@www.bilibili.com/video/" + BV,
+    "http://b23.tv/example",
+    "https://b23.tv:444/example",
+    "https://b23.tv.evil.test/example",
+    "http://bili2233.cn/example",
+    "https://bili2233.cn:444/example",
+    "https://bili2233.cn.evil.test/example",
+])
 def test_url_validation_rejects_unsupported_targets(modules, value):
     with pytest.raises(modules.i18n.PluginError):
         modules.video.checked_url(value)
@@ -321,7 +360,8 @@ def test_subtitle_language_normalization_and_srt_timestamps(modules):
 
 
 @pytest.mark.asyncio
-async def test_subtitle_parts_preview_and_unique_complete_attachments(modules, monkeypatch, tmp_path):
+@pytest.mark.parametrize("short_link", [False, True])
+async def test_subtitle_parts_preview_and_unique_complete_attachments(modules, monkeypatch, tmp_path, short_link):
     account = adapter()
     handle = SimpleNamespace(get_info=AsyncMock(return_value={"pages": [{"cid": 100}, {"cid": 200}]}),
         get_subtitle=AsyncMock(return_value={"subtitles": [{"lan": "ai-zh", "subtitle_url": "//aisubtitle.hdslb.com/test"}]}))
@@ -333,7 +373,11 @@ async def test_subtitle_parts_preview_and_unique_complete_attachments(modules, m
         {"from": 0, "to": 1, "content": "<i>" + "字" * 110 + "</i>"},
         {"from": 1, "to": 2, "content": "second"},
     ]})
-    first = await instance.bili_video_subtitle(video=BV, page=2, language="zh-CN")
+    video_input = {"video": BV, "page": 2}
+    if short_link:
+        mock_short_link_redirect(modules, monkeypatch, f"https://www.bilibili.com/video/{BV}?p=2")
+        video_input = {"video": "https://bili2233.cn/example"}
+    first = await instance.bili_video_subtitle(**video_input, language="zh-CN")
     assert isinstance(first, ToolResult)
     result = unpack(first)
     assert result["language"] == "ai-zh" and result["next_entry_offset"] == 1 and result["text_truncated"]

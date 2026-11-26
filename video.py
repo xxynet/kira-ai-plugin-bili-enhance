@@ -20,6 +20,7 @@ from .i18n import PluginError
 
 BV_PATTERN = re.compile(r"BV[0-9A-Za-z]{10}")
 VIDEO_HOSTS = {"bilibili.com", "www.bilibili.com", "m.bilibili.com"}
+SHORT_LINK_HOSTS = {"b23.tv", "bili2233.cn"}
 SUBTITLE_DOMAINS = ("hdslb.com", "bilibili.com", "bilivideo.com")
 
 
@@ -33,7 +34,7 @@ def checked_url(url, *, subtitle=False):
         raise PluginError("invalid_download" if subtitle else "invalid_video") from None
     host = (parsed.hostname or "").lower()
     allowed = (any(host == domain or host.endswith("." + domain) for domain in SUBTITLE_DOMAINS)
-               if subtitle else host in VIDEO_HOSTS | {"b23.tv"})
+               if subtitle else host in VIDEO_HOSTS | SHORT_LINK_HOSTS)
     if parsed.scheme != "https" or parsed.username or parsed.password or port not in (None, 443) or not allowed:
         raise PluginError("invalid_download" if subtitle else "invalid_video")
     return parsed
@@ -46,12 +47,12 @@ async def resolve_video(value, timeout):
     if BV_PATTERN.fullmatch(value):
         return value, 1
     parsed = checked_url(value)
-    if parsed.hostname == "b23.tv":
+    if parsed.hostname in SHORT_LINK_HOSTS:
         async with httpx.AsyncClient(timeout=timeout, follow_redirects=False) as client:
             visited = set()
             for _ in range(6):
                 parsed = checked_url(value)
-                if parsed.hostname != "b23.tv":
+                if parsed.hostname not in SHORT_LINK_HOSTS:
                     break
                 if value in visited:
                     raise PluginError("invalid_video")
